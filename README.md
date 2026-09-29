@@ -9,14 +9,17 @@ lights.sh off    # RGB off; display an all-black image
 lights.sh        # Toggle the last successfully applied state
 ```
 
-The LCD is blanked with a black JPEG; its backlight is not powered down.
+The LCD is blanked with a continuous stream of black JPEG frames; its backlight
+is not powered down. `off` starts a transient systemd service named
+`stellanor-display-blank.service`; `on` stops that stream and resets the display.
+The JPEG is encoded once and reused, without GPU rendering.
 The supported display is the ChiZhu `87ad:70db` SSCRM panel reporting model
 7 at response byte 32, using 640×480 JPEG frames. Other panels are rejected.
 It does not change fan speeds, GPU workloads, or cooling settings.
 
 ## Setup
 
-Requires Bash, `flock`, `sudo`, Python 3, PyUSB, Pillow, liquidctl, and OpenRGB 1.0.
+Requires systemd, Bash, `flock`, `sudo`, Python 3, PyUSB, Pillow, liquidctl, and OpenRGB 1.0.
 On Ubuntu, install the Python dependencies with:
 
 ```sh
@@ -51,7 +54,9 @@ supported RGB controller families; adapt it and the device names in
 Toggle state and diagnostic logs live in `$XDG_STATE_HOME/chassis-lights`
 (default `~/.local/state/chassis-lights`). Toggle tracks this script's last
 successful command, not changes made by other RGB software. The script
-does not install a background service or automatically run at boot.
+does not automatically run at boot. Its transient display service runs only
+while off is selected and is removed when stopped. Check it with
+`systemctl status stellanor-display-blank.service`.
 
 ## Validation
 
