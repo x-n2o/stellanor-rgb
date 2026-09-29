@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.log
+*.AppImage
+squashfs-root/
+.env
+state/
