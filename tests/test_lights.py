@@ -18,6 +18,22 @@ class LightsTest(unittest.TestCase):
         sudo = bindir / 'sudo'
         sudo.write_text('#!/bin/sh\nexec "$@"\n')
         sudo.chmod(0o755)
+        systemctl = bindir / 'systemctl'
+        systemctl.write_text("""#!/bin/sh
+echo "$*" >> "$HOME/systemctl-calls"
+case "$*" in
+  *"is-active"*)
+    if test "$*" = "--user is-active --quiet pearl-watch-trcc.service" && test -f "$HOME/pearl-active"; then exit 0; fi
+    exit 3;;
+  *"LoadState"*)
+    if test -f "$HOME/services"; then echo loaded; else echo not-found; fi;;
+esac
+exit 0
+""")
+        systemctl.chmod(0o755)
+        trcc = bindir / 'trcc'
+        trcc.write_text('#!/bin/sh\necho "$*" >> "$HOME/trcc-calls"\n')
+        trcc.chmod(0o755)
         liquidctl = bindir / 'liquidctl'
         liquidctl.write_text('#!/bin/sh\nexit 0\n')
         liquidctl.chmod(0o755)
@@ -69,3 +85,48 @@ test ! -f "$HOME/fail"
     def test_invalid_argument_does_not_touch_hardware(self):
         self.assertEqual(self.run_lights('invalid').returncode, 2)
         self.assertFalse((self.root / 'calls').exists())
+
+    def test_stats_requires_installed_service(self):
+        self.assertNotEqual(self.run_lights('stats').returncode, 0)
+        self.assertFalse((self.root / 'calls').exists())
+
+    def test_stats_does_not_touch_lcd_or_oneshot_rgb(self):
+        (self.root / 'services').touch()
+        result = self.run_lights('stats')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), 'Lights stats')
+        self.assertFalse((self.root / 'calls').exists())
+        self.assertFalse((self.root / 'trcc-calls').exists())
+        self.assertEqual(self.run_lights().stdout.strip(), 'Lights off')
+
+    def test_trcc_off_stops_pearl_before_sleep(self):
+        (self.root / 'services').touch()
+        self.assertEqual(self.run_lights('off').returncode, 0)
+        calls = (self.root / 'systemctl-calls').read_text()
+        self.assertIn('--user stop pearl-watch-trcc.service', calls)
+        self.assertEqual((self.root / 'trcc-calls').read_text(), 'display sleep 87ad:70db\n')
+
+    def test_trcc_on_starts_pearl_without_legacy_reset(self):
+        (self.root / 'services').touch()
+        self.assertEqual(self.run_lights('on').returncode, 0)
+        calls = (self.root / 'systemctl-calls').read_text()
+        self.assertIn('--user start pearl-watch-trcc.service', calls)
+        self.assertLess(calls.index('stop stellanor-display-blank.service'),
+                        calls.index('--user start pearl-watch-trcc.service'))
+        self.assertLess(calls.index('--user stop trcc-tps.service'),
+                        calls.index('--user start pearl-watch-trcc.service'))
+        self.assertFalse((self.root / 'trcc-calls').exists())
+
+    def test_toggle_turns_off_active_pearl_despite_saved_off(self):
+        (self.root / 'services').touch()
+        state = self.root / 'state/chassis-lights'
+        state.mkdir(parents=True)
+        (state / 'state').write_text('off\n')
+        (self.root / 'pearl-active').touch()
+        result = self.run_lights()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), 'Lights off')
+        self.assertIn('--user stop pearl-watch-trcc.service',
+                      (self.root / 'systemctl-calls').read_text())
+        self.assertEqual((self.root / 'trcc-calls').read_text(),
+                         'display sleep 87ad:70db\n')
