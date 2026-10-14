@@ -14,7 +14,9 @@ lights.sh        # Toggle, accounting for services started at login
 
 Each LED zone fills with the same Pearl payout progress. Cyan marks progress,
 green marks the payout threshold reached, and amber marks stale pool data.
-A shared four-second pulse animates the filled portion and partial leading LED.
+A shared twelve-second colour sweep and four-second pulse animate the filled
+portion and partial leading LED. The sweep continues above the payout threshold
+while rewards mature, so completion never leaves the lights at one fixed colour.
 Unfilled LEDs remain dim. Rewards still maturing count towards progress, just
 as in `pearl watch`; a full bar can remain full while awaiting confirmation.
 
