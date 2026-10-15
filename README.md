@@ -16,8 +16,7 @@ Each LED zone fills with the same Pearl payout progress. Cyan marks progress,
 green marks the payout threshold reached, and amber marks stale pool data.
 The status colour stays steady. Brightness tracks progress towards the next
 whole PRL: a total pool balance of 2.25 PRL gives 25% brightness, 2.99 PRL gives
-99%, and 3.00 PRL resets to 0%. RAM and motherboard lighting have no timed brightness pulse or
-colour sweep. The controller uses the dashboard's
+99%, and 3.00 PRL resets to 0%. The controller uses the dashboard's
 `next_prl_progress` value, or the fractional total balance with older snapshots.
 The GPU's 30 LEDs instead fill from LED 0 (initially left to right) using that
 same next-1-PRL fraction: 50% lights the first 15 LEDs at 50% brightness and
@@ -28,7 +27,7 @@ tail over the dim progress bar. Each sweep takes one second regardless of the
 filled length, followed by a pause that decreases linearly from two seconds
 at 0% progress to 0.3 seconds at 100%. Sweep timing and length are latched
 at cycle boundaries, so live progress updates cannot jump the wave backwards. Unfilled LEDs stay off throughout. The GPU resets its bar
-at each whole PRL. Unfilled RAM and motherboard LEDs remain dim relative to the filled portion.
+at each whole PRL.
 Rewards still maturing count towards progress, just
 as in `pearl watch`; a full bar can remain full while awaiting confirmation.
 
@@ -43,6 +42,15 @@ sides of its perimeter. Only the GPU leaves the unfilled section fully off.
 Keyboard matrix holes and Void slots remain black. Each accessory receives
 one complete frame, so its zones share the same wave position.
 
+The two Kingston Fury sticks, onboard motherboard LEDs and addressable fan/header
+chains use the same ripple in their reported LED order, independently for each
+zone. Like the keyboard and mouse, every LED retains the next-PRL background
+brightness without a minimum, while the full-brightness ripple stops at the
+current percentage. RAM and motherboard updates send one complete frame per
+controller to avoid redundant queued writes. ARGB headers still use their
+driver-reported 120 slots; physical chain lengths and direction require visual
+confirmation, so some of a sweep may traverse unused slots.
+
 The controller reads `pearl-watch-trcc/status.json`, emitted by Pearl's shared
 monitor. It makes no pool requests or utilization queries. The same
 `payout_progress` calculation drives the terminal, LCD and RGB. The controller
@@ -52,7 +60,7 @@ scaling; update that module alongside this controller. Override its location wit
 run `pearl watch --install-service` in the stellanor-mining project first.
 
 All detected Direct-mode accessories use one SDK connection and base brightness
-value; the GPU, keyboard and mouse waves overlay full-brightness highlights.
+value; all supported devices overlay full-brightness ripple highlights.
 Only changed frames are sent. Each device update is read back before sending
 more, so slower RAM and keyboard controllers cannot accumulate old animation
 frames while faster case lighting moves ahead. This confirms the SDK state;

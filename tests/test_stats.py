@@ -8,6 +8,24 @@ rgb = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(rgb)
 
 
+def linear_device(device_id, zones):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    data = []
+    offset = 0
+    for name, size in zones:
+        data.append(SimpleNamespace(name=name, start_idx=offset, num_leds=size))
+        offset += size
+    device = SimpleNamespace(id=device_id, name='Linear device', leds=[None] * offset,
+        colors=[(0, 0, 0)] * offset, data=SimpleNamespace(zones=data),
+        zones=[SimpleNamespace(name=zone.name, leds=[None] * zone.num_leds, set_colors=Mock())
+               for zone in data], update=Mock())
+    def set_colors(colors, fast=False):
+        device.colors = colors
+    device.set_colors = Mock(side_effect=set_colors)
+    return device
+
+
 class StatsTest(unittest.TestCase):
     def test_direct_mode_uses_full_hardware_brightness_before_frame_scaling(self):
         from types import SimpleNamespace
@@ -174,11 +192,11 @@ class StatsTest(unittest.TestCase):
             leds = [None] * 30
             def set_colors(self, colors, fast=False):
                 self.colors = colors
-        gpu, ram = Zone(), Zone()
+        gpu, ram = Zone(), linear_device(1, [('RAM', 30)])
         hardware = rgb.Hardware.__new__(rgb.Hardware)
         hardware.devices = {
             'gpu': [SimpleNamespace(id=0, zones=[gpu], update=lambda: None)],
-            'ram': [SimpleNamespace(id=1, zones=[ram], update=lambda: None)],
+            'ram': [ram],
         }
         hardware.previous_progress = {}
         hardware.ripple_cycle = rgb.GPURippleCycle()
@@ -190,8 +208,8 @@ class StatsTest(unittest.TestCase):
             base = theme.accent(3.5, stale, 1.5)
             self.assertEqual(gpu.colors, [tuple(round(channel * .5) for channel in base)] * 15
                              + [(0, 0, 0)] * 15)
-            self.assertEqual(ram.colors, [(4, 5, 6)] * 30)
-            theme.progress_colors.assert_called_with(30, 3.5, 1.5, stale, brightness=.5)
+            self.assertEqual(ram.colors, [tuple(round(channel * .5) for channel in base)] * 30)
+            theme.progress_colors.assert_not_called()
         hardware.write_progress(3.5, 1.5, brightness=0)
         self.assertEqual(gpu.colors, [(0, 0, 0)] * 30)
 
@@ -358,9 +376,11 @@ class StatsTest(unittest.TestCase):
             accessory.colors = colors
         accessory.set_colors = set_accessory
         accessory.update = lambda: None
+        ram = linear_device(2, [('RAM', 30)])
+        chassis = linear_device(3, [('Mainboard', 30)])
         hardware = rgb.Hardware.__new__(rgb.Hardware)
         hardware.devices = {'gpu': [SimpleNamespace(id=0, zones=[zone], update=lambda: None)],
-                            'accessories': [accessory]}
+                            'accessories': [accessory], 'ram': [ram], 'chassis': [chassis]}
         hardware.accessory_layouts = {1: (30, list(range(30)))}
         hardware.previous_progress = {}
         hardware.rgb_color = lambda *channels: channels
@@ -369,9 +389,53 @@ class StatsTest(unittest.TestCase):
         hardware.write_progress(3.49, 216700.6, brightness=.49)
         self.assertEqual(zone.colors.index(color), 10)
         self.assertEqual(accessory.colors.index(color), 10)
+        self.assertEqual(ram.colors.index(color), 10)
+        self.assertEqual(chassis.colors.index(color), 10)
         hardware.write_progress(3.49001, 216700.65, brightness=.49001)
         self.assertEqual(zone.colors.index(color), 11)
         self.assertEqual(accessory.colors.index(color), 11)
+        self.assertEqual(ram.colors.index(color), 11)
+        self.assertEqual(chassis.colors.index(color), 11)
+
+    def test_ram_sticks_ripple_in_parallel_with_unfilled_background_lit(self):
+        device = linear_device(0, [('Fury Slot 1', 12), ('Fury Slot 2', 12)])
+        color = (100, 255, 60)
+        frame = rgb.linear_device_ripple_colors(device, .5, color, 1 / 3)
+        self.assertEqual(frame[:12], frame[12:])
+        self.assertEqual(frame[3], color)
+        self.assertEqual(frame[6:12], [(50, 128, 30)] * 6)
+        self.assertEqual(rgb.linear_device_ripple_colors(device, 0, color, 0), [(0, 0, 0)] * 24)
+
+    def test_chassis_keeps_each_header_independent_and_skips_void(self):
+        device = linear_device(0, [('Aura Mainboard', 3), ('Header 1', 120),
+                                  ('Header 2', 120), ('Header 3', 120), ('Void', 2)])
+        color = (100, 255, 60)
+        frame = rgb.linear_device_ripple_colors(device, .5, color, 1 / 3)
+        self.assertEqual(len(frame), 365)
+        self.assertEqual(frame[1], color)
+        self.assertEqual(frame[3 + 21], color)
+        self.assertEqual(frame[3:123], frame[123:243])
+        self.assertEqual(frame[123:243], frame[243:363])
+        self.assertEqual(frame[3 + 60:123], [(50, 128, 30)] * 60)
+        self.assertEqual(frame[-2:], [(0, 0, 0)] * 2)
+
+    def test_ram_and_chassis_use_one_confirmed_frame_per_controller(self):
+        from types import SimpleNamespace
+        ram = linear_device(0, [('Slot 1', 12), ('Slot 2', 12)])
+        chassis = linear_device(1, [('Mainboard', 3), ('Header', 120)])
+        hardware = rgb.Hardware.__new__(rgb.Hardware)
+        hardware.devices = {'ram': [ram], 'chassis': [chassis]}
+        hardware.previous_progress = {}
+        hardware.rgb_color = lambda *channels: channels
+        hardware.theme = SimpleNamespace(accent=lambda *args: (100, 255, 60))
+        hardware.write_progress(3.5, 1 / 3, brightness=.5)
+        hardware.write_progress(3.5, 1 / 3, brightness=.5)
+        for device in [ram, chassis]:
+            device.set_colors.assert_called_once()
+            device.update.assert_called_once()
+            for zone in device.zones:
+                zone.set_colors.assert_not_called()
+            self.assertEqual(hardware.previous_progress[(device.id, None)], device.colors)
 
     def test_all_hardware_zones_receive_the_same_next_prl_brightness(self):
         from types import SimpleNamespace
@@ -400,34 +464,41 @@ class StatsTest(unittest.TestCase):
     def test_unconfirmed_device_frame_is_not_cached(self):
         from types import SimpleNamespace
         from unittest.mock import patch
-        zone = SimpleNamespace(name='RAM', leds=[None], colors=[(0, 0, 0)],
-                               set_colors=lambda *args, **kwargs: None)
+        from unittest.mock import Mock
+        device = linear_device(0, [('RAM', 1)])
+        device.set_colors = Mock()
         hardware = rgb.Hardware.__new__(rgb.Hardware)
-        hardware.devices = {'ram': [SimpleNamespace(id=0, name='RAM', zones=[zone], update=lambda: None)]}
+        hardware.devices = {'ram': [device]}
         hardware.previous_progress = {}
-        hardware.theme = SimpleNamespace(progress_colors=lambda *args, **kwargs: [(50, 128, 30)])
+        hardware.ripple_cycle = rgb.GPURippleCycle()
+        hardware.ripple_cycle.phase(.5, 0)
+        hardware.theme = SimpleNamespace(accent=lambda *args: (100, 255, 60))
         hardware.rgb_color = lambda *channels: channels
         with patch.object(rgb.time, 'monotonic', side_effect=[0, 11]):
             with self.assertRaisesRegex(RuntimeError, 'RGB frame was not confirmed'):
-                hardware.write_progress(2.5, 7, brightness=.5)
+                hardware.write_progress(2.5, 1.5, brightness=.5)
         self.assertEqual(hardware.previous_progress, {})
 
     def test_slow_controller_is_polled_without_resending_the_frame(self):
         from types import SimpleNamespace
         from unittest.mock import Mock, patch
-        zone = SimpleNamespace(name='RAM', leds=[None], colors=[(0, 0, 0)], set_colors=Mock())
+        device = linear_device(0, [('RAM', 1)])
+        device.set_colors = Mock()
         updates = []
         def update():
             updates.append(True)
             if len(updates) == 2:
-                zone.colors = [(50, 128, 30)]
+                device.colors = [(50, 128, 30)]
+        device.update = update
         hardware = rgb.Hardware.__new__(rgb.Hardware)
-        hardware.devices = {'ram': [SimpleNamespace(id=0, name='RAM', zones=[zone], update=update)]}
+        hardware.devices = {'ram': [device]}
         hardware.previous_progress = {}
-        hardware.theme = SimpleNamespace(progress_colors=lambda *args, **kwargs: [(50, 128, 30)])
+        hardware.ripple_cycle = rgb.GPURippleCycle()
+        hardware.ripple_cycle.phase(.5, 0)
+        hardware.theme = SimpleNamespace(accent=lambda *args: (100, 255, 60))
         hardware.rgb_color = lambda *channels: channels
         with patch.object(rgb.time, 'sleep'):
-            hardware.write_progress(2.5, 7, brightness=.5)
+            hardware.write_progress(2.5, 1.5, brightness=.5)
         self.assertEqual(len(updates), 2)
-        zone.set_colors.assert_called_once()
-        self.assertEqual(hardware.previous_progress, {(0, 0): [(50, 128, 30)]})
+        device.set_colors.assert_called_once()
+        self.assertEqual(hardware.previous_progress, {(0, None): [(50, 128, 30)]})
