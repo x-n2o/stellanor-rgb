@@ -16,14 +16,17 @@ Each LED zone fills with the same Pearl payout progress. Cyan marks progress,
 green marks the payout threshold reached, and amber marks stale pool data.
 The status colour stays steady. Brightness tracks progress towards the next
 whole PRL: a total pool balance of 2.25 PRL gives 25% brightness, 2.99 PRL gives
-99%, and 3.00 PRL resets to 0%. There is no timed brightness pulse or colour
-sweep. The controller uses the dashboard's
+99%, and 3.00 PRL resets to 0%. Other devices have no timed brightness pulse or
+colour sweep. The controller uses the dashboard's
 `next_prl_progress` value, or the fractional total balance with older snapshots.
 The GPU's 30 LEDs instead fill from LED 0 (initially left to right) using that
 same next-1-PRL fraction: 50% lights the first 15 LEDs at 50% brightness and
 leaves the other 15 off. A partially filled boundary LED is proportionally
-dimmer. The GPU retains the shared status colour and resets its bar at each
-whole PRL. Unfilled LEDs on other devices remain dim relative to the filled portion.
+dimmer. A wave travels left to right only within the filled GPU section: its
+leading LED reaches 100% brightness in the shared status colour, with a fading
+tail over the dim progress bar. Each sweep takes three seconds, followed by
+a one-second pause; unfilled LEDs stay off throughout. The GPU resets its bar
+at each whole PRL. Unfilled LEDs on other devices remain dim relative to the filled portion.
 Rewards still maturing count towards progress, just
 as in `pearl watch`; a full bar can remain full while awaiting confirmation.
 
@@ -35,7 +38,8 @@ scaling; update that module alongside this controller. Override its location wit
 `LIGHTS_PEARL_REPO` at install. Install and
 run `pearl watch --install-service` in the stellanor-mining project first.
 
-All detected Direct-mode accessories use one SDK connection and brightness value.
+All detected Direct-mode accessories use one SDK connection and base brightness
+value; the GPU wave overlays a full-brightness highlight on its filled section.
 Only changed frames are sent. Each device update is read back before sending
 more, so slower RAM and keyboard controllers cannot accumulate old animation
 frames while faster case lighting moves ahead. This confirms the SDK state;

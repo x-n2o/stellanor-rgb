@@ -193,6 +193,31 @@ class StatsTest(unittest.TestCase):
         hardware.write_progress(3.5, 7, brightness=0)
         self.assertEqual(gpu.colors, [(0, 0, 0)] * 30)
 
+    def test_gpu_ripple_moves_right_at_full_brightness_with_a_fading_tail(self):
+        color = (100, 255, 60)
+        first = rgb.gpu_ripple_colors(30, .5, color, 0)
+        middle = rgb.gpu_ripple_colors(30, .5, color, 1)
+        later = rgb.gpu_ripple_colors(30, .5, color, 2)
+        self.assertEqual(first[0], color)
+        self.assertEqual(middle[6], color)
+        self.assertEqual(later[12], color)
+        self.assertEqual(middle[5], (75, 191, 45))
+        self.assertEqual(middle[0], (50, 128, 30))
+        for frame in [first, middle, later]:
+            self.assertEqual(frame[15:], [(0, 0, 0)] * 15)
+        self.assertEqual(rgb.gpu_ripple_colors(30, .5, color, 3.5),
+                         rgb.gpu_progress_colors(30, .5, color))
+        self.assertEqual(rgb.gpu_ripple_colors(30, .5, color, 4), first)
+
+    def test_gpu_ripple_preserves_empty_bar_and_fractional_boundary(self):
+        color = (100, 255, 60)
+        for now in [0, .5, 1, 2, 3, 4]:
+            self.assertEqual(rgb.gpu_ripple_colors(30, 0, color, now), [(0, 0, 0)] * 30)
+            self.assertEqual(rgb.gpu_ripple_colors(0, .5, color, now), [])
+            frame = rgb.gpu_ripple_colors(30, .09, color, now)
+            self.assertEqual(frame[3:], [(0, 0, 0)] * 27)
+        self.assertEqual(rgb.gpu_ripple_colors(30, .09, color, 1)[2], color)
+
     def test_all_hardware_zones_receive_the_same_next_prl_brightness(self):
         from types import SimpleNamespace
         calls = []

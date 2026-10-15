@@ -14,9 +14,12 @@ import time
 
 LOG = logging.getLogger("rgb-stats")
 PERIOD = 4.0
-FRAME_INTERVAL = 0.2
+FRAME_INTERVAL = 0.05
 SAMPLE_INTERVAL = 1.0
 CONFIRM_TIMEOUT = 10.0
+GPU_WAVE_SWEEP = 3.0
+GPU_WAVE_PERIOD = 4.0
+GPU_WAVE_TAIL = 3
 
 
 def color_for_load(percent):
@@ -110,6 +113,24 @@ def gpu_progress_colors(count, fraction, color):
             for index in range(count)]
 
 
+def gpu_ripple_colors(count, fraction, color, now):
+    """Sweep a full-brightness highlight only through the filled GPU bar."""
+    colors = gpu_progress_colors(count, fraction, color)
+    filled = min(count, math.ceil(max(0.0, min(1.0, fraction)) * count))
+    phase = now % GPU_WAVE_PERIOD
+    if not filled or phase >= GPU_WAVE_SWEEP:
+        return colors
+    # Let the tail leave the filled section before the next sweep begins.
+    head = int(phase / GPU_WAVE_SWEEP * (filled + GPU_WAVE_TAIL))
+    for index in range(filled):
+        distance = head - index
+        if 0 <= distance < GPU_WAVE_TAIL:
+            intensity = (1 + math.cos(math.pi * distance / GPU_WAVE_TAIL)) / 2
+            colors[index] = tuple(max(base, round(channel * intensity))
+                                  for base, channel in zip(colors[index], color))
+    return colors
+
+
 class Hardware:
     def __init__(self, port):
         from openrgb import OpenRGBClient
@@ -162,8 +183,8 @@ class Hardware:
                 for index, zone in enumerate(device.zones):
                     if zone.leds and zone.name != 'Void':
                         if group == 'gpu':
-                            colors = gpu_progress_colors(len(zone.leds), brightness,
-                                                         self.theme.accent(progress, stale, now))
+                            colors = gpu_ripple_colors(len(zone.leds), brightness,
+                                                       self.theme.accent(progress, stale, now), now)
                         else:
                             colors = self.theme.progress_colors(len(zone.leds), progress, now, stale,
                                                                brightness=brightness)
