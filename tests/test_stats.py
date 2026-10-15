@@ -148,12 +148,31 @@ class StatsTest(unittest.TestCase):
             leds = [None] * 4
             def set_colors(self, colors, fast=False):
                 calls.append((colors, fast))
+                self.colors = colors
         hardware = rgb.Hardware.__new__(rgb.Hardware)
-        hardware.devices = {'accessories': [SimpleNamespace(zones=[Zone(), Zone()])]}
+        updates = []
+        hardware.devices = {'accessories': [SimpleNamespace(id=0, zones=[Zone(), Zone()],
+                                                          update=lambda: updates.append(True))]}
+        hardware.previous_progress = {}
         def colors(count, progress, now, stale, *, brightness):
             self.assertEqual((count, progress, now, stale, brightness), (4, 2.5, 7, False, .5))
             return [(50, 128, 30)] * count
         hardware.theme = SimpleNamespace(progress_colors=colors)
         hardware.rgb_color = lambda *channels: channels
         hardware.write_progress(2.5, 7, brightness=.5)
+        hardware.write_progress(2.5, 7, brightness=.5)
         self.assertEqual(calls, [([(50, 128, 30)] * 4, True)] * 2)
+        self.assertEqual(updates, [True])
+
+    def test_unconfirmed_device_frame_is_not_cached(self):
+        from types import SimpleNamespace
+        zone = SimpleNamespace(name='RAM', leds=[None], colors=[(0, 0, 0)],
+                               set_colors=lambda *args, **kwargs: None)
+        hardware = rgb.Hardware.__new__(rgb.Hardware)
+        hardware.devices = {'ram': [SimpleNamespace(id=0, name='RAM', zones=[zone], update=lambda: None)]}
+        hardware.previous_progress = {}
+        hardware.theme = SimpleNamespace(progress_colors=lambda *args, **kwargs: [(50, 128, 30)])
+        hardware.rgb_color = lambda *channels: channels
+        with self.assertRaisesRegex(RuntimeError, 'RGB frame was not confirmed'):
+            hardware.write_progress(2.5, 7, brightness=.5)
+        self.assertEqual(hardware.previous_progress, {})

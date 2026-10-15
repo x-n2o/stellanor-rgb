@@ -121,6 +121,7 @@ class Hardware:
                 device.set_mode('Direct')
             LOG.info('Synchronized controllers: %s', [d.name for group in self.devices.values() for d in group])
             self.previous = {}
+            self.previous_progress = {}
         except BaseException:
             self.client.disconnect()
             raise
@@ -135,11 +136,26 @@ class Hardware:
     def write_progress(self, progress, now, stale=False, *, brightness=1.0):
         for devices in self.devices.values():
             for device in devices:
-                for zone in device.zones:
+                pending = []
+                for index, zone in enumerate(device.zones):
                     if zone.leds and zone.name != 'Void':
                         colors = self.theme.progress_colors(len(zone.leds), progress, now, stale,
                                                            brightness=brightness)
-                        zone.set_colors([self.rgb_color(*color) for color in colors], fast=True)
+                        key = (device.id, index)
+                        if self.previous_progress.get(key) == colors:
+                            continue
+                        frame = [self.rgb_color(*color) for color in colors]
+                        zone.set_colors(frame, fast=True)
+                        pending.append((index, key, colors, frame))
+                if pending:
+                    # OpenRGB queues updates separately for each controller.
+                    # Read back after writes to wait for slow RAM/USB queues,
+                    # then avoid resending identical frames on every poll.
+                    device.update()
+                    for index, key, colors, frame in pending:
+                        if device.zones[index].colors != frame:
+                            raise RuntimeError(f'{device.name}: RGB frame was not confirmed')
+                        self.previous_progress[key] = colors
 
     def close(self):
         self.client.disconnect()

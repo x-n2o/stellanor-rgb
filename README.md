@@ -31,6 +31,10 @@ scaling; update that module alongside this controller. Override its location wit
 run `pearl watch --install-service` in the stellanor-mining project first.
 
 All detected Direct-mode accessories use one SDK connection and brightness value.
+Only changed frames are sent. Each device update is read back before sending
+more, so slower RAM and keyboard controllers cannot accumulate old animation
+frames while faster case lighting moves ahead. This confirms the SDK state;
+physical colour matching still depends on each device's LEDs.
 Each ASUS ARGB header is configured to its supported maximum of 120 slots at
 runtime; this is not a measured physical chain length. USB/SMBus writes are
 sequential, so synchronization is approximate at the transport level.
