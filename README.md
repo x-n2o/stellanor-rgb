@@ -12,40 +12,34 @@ lights.sh off    # Stop animation, turn all detected RGB off, sleep the LCD
 lights.sh        # Toggle, accounting for services started at login
 ```
 
-Each LED zone fills with the same Pearl payout progress. Cyan marks progress,
-green marks the payout threshold reached, and amber marks stale pool data.
-The status colour stays steady. Brightness tracks progress towards the next
-whole PRL: a total pool balance of 2.25 PRL gives 25% brightness, 2.99 PRL gives
-99%, and 3.00 PRL resets to 0%. The controller uses the dashboard's
-`next_prl_progress` value, or the fractional total balance with older snapshots.
-The GPU's 30 LEDs instead fill from LED 0 (initially left to right) using that
-same next-1-PRL fraction: 50% lights the first 15 LEDs at 50% brightness and
-leaves the other 15 off. A partially filled boundary LED is proportionally
-dimmer. A wave travels left to right only within the filled GPU section: its
-leading LED reaches 100% brightness in the shared status colour, with a fading
-tail over the dim progress bar. Each sweep takes one second regardless of the
-filled length, followed by a pause that decreases linearly from two seconds
-at 0% progress to 0.3 seconds at 100%. Sweep timing and length are latched
-at cycle boundaries, so live progress updates cannot jump the wave backwards. Unfilled LEDs stay off throughout. The GPU resets its bar
-at each whole PRL.
-Rewards still maturing count towards progress, just
-as in `pearl watch`; a full bar can remain full while awaiting confirmation.
+All devices share the Pearl payout status colour: cyan during progress, green
+when the payout threshold is reached, and amber for stale pool data. Brightness
+tracks progress towards the next whole PRL: a balance of 2.25 PRL gives 25%
+brightness, 2.99 gives 99%, and 3.00 resets to 0%, with no minimum. The controller
+uses TRCC's `next_prl_progress`, falling back to fractional total pool balance
+for older snapshots. Rewards still maturing count towards progress.
 
-The BlackWidow V4 Pro and Basilisk V3 Pro 35K use the same ripple timing and
-limit the ripple to the start through the current next-PRL percentage. Their background
-brightness follows next-PRL progress exactly, with no minimum; at a whole-coin
-reset the device is black. Every physical LED retains that background brightness,
-including beyond the ripple's progress endpoint. The keyboard
-wave moves left to right across key columns, side lighting and the wrist rest;
-the mouse wave uses the reversed palm-to-scroll-wheel order across both
-sides of its perimeter. Only the GPU leaves the unfilled section fully off.
-Keyboard matrix holes and Void slots remain black. Each accessory receives
-one complete frame, so its zones share the same wave position.
+The GPU, BlackWidow V4 Pro and Basilisk V3 Pro 35K fill left to right to that
+same percentage. Every sweep starts with the entire device black. A 100%-bright
+wave reveals the filled section, leaving passed LEDs at the progress-proportional
+brightness; LEDs ahead of the wave and beyond the endpoint stay off. For example,
+at 50% the wave reveals the left half, which settles to 50% brightness while the
+right half remains off. A partially filled boundary LED settles proportionally
+dimmer. The completed bar holds during the pause, then clears for the next sweep.
+
+Each sweep takes one second. The following pause decreases linearly from two
+seconds at 0% progress to 0.3 seconds at 100%. Sweep timing and length are latched
+at cycle boundaries, so live progress updates cannot jump the wave backwards or
+pre-illuminate newly added positions before the next sweep. Keyboard columns,
+side lighting and the U-shaped wrist rest share the horizontal axis; the mouse
+uses horizontal coordinates across both sides of its perimeter and its wheel.
+Keyboard matrix holes and Void slots remain black. Each accessory receives one
+complete frame so all of its zones share a single wave position.
 
 The two Kingston Fury sticks, onboard motherboard LEDs and addressable fan/header
 chains use the same ripple in their reported LED order, independently for each
-zone. Like the keyboard and mouse, every LED retains the next-PRL background
-brightness without a minimum, while the full-brightness ripple stops at the
+zone. Every LED retains the next-PRL background brightness without a minimum,
+while the full-brightness ripple stops at the
 current percentage. RAM and motherboard updates send one complete frame per
 controller to avoid redundant queued writes. ARGB headers still use their
 driver-reported 120 slots; physical chain lengths and direction require visual

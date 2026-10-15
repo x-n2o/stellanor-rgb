@@ -201,6 +201,7 @@ class StatsTest(unittest.TestCase):
         hardware.previous_progress = {}
         hardware.ripple_cycle = rgb.GPURippleCycle()
         hardware.ripple_cycle.phase(.5, 0)
+        hardware.reveal_started_at = hardware.ripple_cycle.started_at
         hardware.theme = theme
         hardware.rgb_color = lambda *channels: channels
         for stale in [False, True]:
@@ -307,6 +308,39 @@ class StatsTest(unittest.TestCase):
         cycle.phase(.1, 0)
         self.assertEqual(rgb.ripple_colors(7, .1, color, cycle.phase(.1, 2.831), keep_lit=True)[0], color)
 
+    def test_reveal_starts_black_and_leaves_only_the_passed_bar_lit(self):
+        color = (100, 200, 60)
+        self.assertEqual(rgb.ripple_colors(10, .5, color, 0, reveal=True), [(0, 0, 0)] * 10)
+        first = rgb.ripple_colors(10, .5, color, .12, reveal=True)
+        self.assertEqual(first, [color] + [(0, 0, 0)] * 9)
+        middle = rgb.ripple_colors(10, .5, color, .34, reveal=True)
+        self.assertEqual(middle, [(50, 100, 30), (75, 150, 45), color] + [(0, 0, 0)] * 7)
+        self.assertEqual(rgb.ripple_colors(10, .5, color, 1.5, reveal=True),
+                         [(50, 100, 30)] * 5 + [(0, 0, 0)] * 5)
+        cycle = rgb.GPURippleCycle()
+        cycle.phase(.5, 0)
+        self.assertEqual(rgb.ripple_colors(10, .5, color, cycle.phase(.5, 2.15), reveal=True),
+                         [(0, 0, 0)] * 10)
+
+    def test_reveal_preserves_zero_full_and_fractional_boundaries(self):
+        color = (100, 200, 60)
+        for fraction in [0, .09, .5, 1]:
+            self.assertEqual(rgb.ripple_colors(30, fraction, color, 0, reveal=True), [(0, 0, 0)] * 30)
+            self.assertEqual(rgb.ripple_colors(30, fraction, color, 1.5, reveal=True),
+                             rgb.gpu_progress_colors(30, fraction, color))
+        for phase in [0, .2, .5, .8, 1.5]:
+            self.assertEqual(rgb.ripple_colors(30, .10000000000000009, color, phase, reveal=True)[3:],
+                             [(0, 0, 0)] * 27)
+
+    def test_reveal_does_not_preilluminate_new_progress_before_the_next_cycle(self):
+        color = (100, 200, 60)
+        frame = rgb.ripple_colors(10, .8, color, .5, reveal=True, cycle_fraction=.2)
+        self.assertEqual(frame[2:], [(0, 0, 0)] * 8)
+        settled = rgb.ripple_colors(10, .8, color, 1.5, reveal=True, cycle_fraction=.2)
+        self.assertEqual(settled, [(80, 160, 48)] * 2 + [(0, 0, 0)] * 8)
+        self.assertEqual(rgb.ripple_colors(10, .1, color, 1.5, reveal=True, cycle_fraction=0),
+                         [(0, 0, 0)] * 10)
+
     def test_keyboard_layout_uses_columns_and_the_wrist_rest_perimeter(self):
         from types import SimpleNamespace
         def zone(name, start, size, matrix=None):
@@ -327,20 +361,24 @@ class StatsTest(unittest.TestCase):
         self.assertEqual(axis[positions[3]], (100, 255, 60))
         self.assertEqual(axis[positions[2]], (40, 102, 24))
 
-    def test_mouse_layout_moves_down_both_sides_instead_of_around_the_strip(self):
+    def test_mouse_layout_fills_left_to_right_in_physical_columns(self):
         from types import SimpleNamespace
         device = SimpleNamespace(name='Razer Basilisk V3 Pro 35K Phantom Green (Wireless)',
             leds=[None] * 12, data=SimpleNamespace(zones=[
                 SimpleNamespace(name='Scroll Wheel', start_idx=0, num_leds=1),
                 SimpleNamespace(name='LED Strip', start_idx=1, num_leds=11)]))
         steps, positions = rgb.accessory_layout(device)
-        self.assertEqual((steps, positions), (7, [6, 5, 4, 3, 2, 1, 0, 2, 3, 4, 5, 6]))
+        self.assertEqual((steps, positions), (6, [3, 0, 0, 0, 0, 1, 3, 4, 5, 5, 5, 5]))
         color = (100, 255, 60)
-        axis = rgb.ripple_colors(steps, .5, color, 3 / 7, keep_lit=True)
+        axis = rgb.ripple_colors(steps, .5, color, .3, reveal=True)
         frame = [axis[p] for p in positions]
-        self.assertEqual(frame[3], color)
-        self.assertEqual(frame[8], color)
-        self.assertEqual(frame[0], (50, 128, 30))
+        self.assertEqual(frame[5], color)
+        self.assertEqual(frame[1:5], [(75, 191, 45)] * 4)
+        self.assertEqual(frame[0], (0, 0, 0))
+        self.assertEqual(frame[7:], [(0, 0, 0)] * 5)
+        settled = rgb.ripple_colors(steps, .5, color, 1.5, reveal=True)
+        self.assertEqual([settled[p] for p in positions],
+                         [(0, 0, 0)] + [(50, 128, 30)] * 5 + [(0, 0, 0)] * 6)
 
     def test_accessory_sends_one_complete_frame_and_confirms_it(self):
         from types import SimpleNamespace
@@ -359,9 +397,13 @@ class StatsTest(unittest.TestCase):
         hardware.theme = SimpleNamespace(accent=lambda *args: (100, 255, 60))
         hardware.write_progress(3.1, 0, brightness=.1)
         hardware.write_progress(3.1, 0, brightness=.1)
-        self.assertEqual(device.colors, [(100, 255, 60), (10, 26, 6), (10, 26, 6), (0, 0, 0)])
+        self.assertEqual(device.colors, [(0, 0, 0)] * 4)
         device.set_colors.assert_called_once()
         device.update.assert_called_once()
+        hardware.write_progress(3.1, .25, brightness=.1)
+        self.assertEqual(device.colors, [(100, 255, 60), (0, 0, 0), (0, 0, 0), (0, 0, 0)])
+        hardware.write_progress(3.1, 3, brightness=.1)
+        self.assertEqual(device.colors, [(0, 0, 0)] * 4)
         device.zones[0].set_colors.assert_not_called()
 
     def test_gpu_and_accessory_share_a_cycle_when_progress_changes(self):
