@@ -19,7 +19,12 @@ whole PRL: a total pool balance of 2.25 PRL gives 25% brightness, 2.99 PRL gives
 99%, and 3.00 PRL resets to 0%. There is no timed brightness pulse or colour
 sweep. The controller uses the dashboard's
 `next_prl_progress` value, or the fractional total balance with older snapshots.
-Unfilled LEDs remain dim relative to the filled portion. Rewards still maturing count towards progress, just
+The GPU's 30 LEDs instead fill from LED 0 (initially left to right) using that
+same next-1-PRL fraction: 50% lights the first 15 LEDs at 50% brightness and
+leaves the other 15 off. A partially filled boundary LED is proportionally
+dimmer. The GPU retains the shared status colour and resets its bar at each
+whole PRL. Unfilled LEDs on other devices remain dim relative to the filled portion.
+Rewards still maturing count towards progress, just
 as in `pearl watch`; a full bar can remain full while awaiting confirmation.
 
 The controller reads `pearl-watch-trcc/status.json`, emitted by Pearl's shared

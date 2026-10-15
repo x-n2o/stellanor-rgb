@@ -152,6 +152,47 @@ class StatsTest(unittest.TestCase):
                 path.write_text(json.dumps(state))
                 self.assertEqual(rgb.read_progress(path), (0, 0, True))
 
+    def test_gpu_bar_fill_brightness_and_coin_rollover(self):
+        color = (100, 200, 60)
+        self.assertEqual(rgb.gpu_progress_colors(30, 0, color), [(0, 0, 0)] * 30)
+        self.assertEqual(rgb.gpu_progress_colors(30, .5, color),
+                         [(50, 100, 30)] * 15 + [(0, 0, 0)] * 15)
+        self.assertEqual(rgb.gpu_progress_colors(30, 1, color), [color] * 30)
+        self.assertEqual(rgb.gpu_progress_colors(30, .09, color),
+                         [(9, 18, 5)] * 2 + [(6, 13, 4)] + [(0, 0, 0)] * 27)
+        self.assertEqual(rgb.gpu_progress_colors(0, .5, color), [])
+
+    def test_gpu_fill_uses_next_prl_fraction_and_shared_status_colour(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        def accent(progress, stale, now):
+            self.assertEqual((progress, now), (3.5, 7))
+            return (255, 145, 24) if stale else (100, 255, 60)
+        theme = SimpleNamespace(accent=accent, progress_colors=Mock(return_value=[(4, 5, 6)] * 30))
+        class Zone:
+            name = 'Unknown'
+            leds = [None] * 30
+            def set_colors(self, colors, fast=False):
+                self.colors = colors
+        gpu, ram = Zone(), Zone()
+        hardware = rgb.Hardware.__new__(rgb.Hardware)
+        hardware.devices = {
+            'gpu': [SimpleNamespace(id=0, zones=[gpu], update=lambda: None)],
+            'ram': [SimpleNamespace(id=1, zones=[ram], update=lambda: None)],
+        }
+        hardware.previous_progress = {}
+        hardware.theme = theme
+        hardware.rgb_color = lambda *channels: channels
+        for stale in [False, True]:
+            hardware.write_progress(3.5, 7, stale, brightness=.5)
+            base = theme.accent(3.5, stale, 7)
+            self.assertEqual(gpu.colors, [tuple(round(channel * .5) for channel in base)] * 15
+                             + [(0, 0, 0)] * 15)
+            self.assertEqual(ram.colors, [(4, 5, 6)] * 30)
+            theme.progress_colors.assert_called_with(30, 3.5, 7, stale, brightness=.5)
+        hardware.write_progress(3.5, 7, brightness=0)
+        self.assertEqual(gpu.colors, [(0, 0, 0)] * 30)
+
     def test_all_hardware_zones_receive_the_same_next_prl_brightness(self):
         from types import SimpleNamespace
         calls = []

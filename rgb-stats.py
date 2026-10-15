@@ -98,6 +98,18 @@ def configure_direct(device):
     device.set_mode(mode)
 
 
+def gpu_progress_colors(count, fraction, color):
+    """Fill from LED 0 towards the next PRL; leave unfilled LEDs black.
+
+    Filled LEDs retain next-PRL brightness, with a proportionally dimmer
+    boundary LED for fractions between whole LEDs.
+    """
+    fraction = max(0.0, min(1.0, fraction))
+    return [tuple(round(channel * fraction * max(0.0, min(1.0, fraction * count - index)))
+                  for channel in color)
+            for index in range(count)]
+
+
 class Hardware:
     def __init__(self, port):
         from openrgb import OpenRGBClient
@@ -144,13 +156,17 @@ class Hardware:
         self.previous = colors.copy()
 
     def write_progress(self, progress, now, stale=False, *, brightness=1.0):
-        for devices in self.devices.values():
+        for group, devices in self.devices.items():
             for device in devices:
                 pending = []
                 for index, zone in enumerate(device.zones):
                     if zone.leds and zone.name != 'Void':
-                        colors = self.theme.progress_colors(len(zone.leds), progress, now, stale,
-                                                           brightness=brightness)
+                        if group == 'gpu':
+                            colors = gpu_progress_colors(len(zone.leds), brightness,
+                                                         self.theme.accent(progress, stale, now))
+                        else:
+                            colors = self.theme.progress_colors(len(zone.leds), progress, now, stale,
+                                                               brightness=brightness)
                         key = (device.id, index)
                         if self.previous_progress.get(key) == colors:
                             continue
