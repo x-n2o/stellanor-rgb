@@ -231,6 +231,16 @@ def accessory_layout(device):
     return None
 
 
+def linear_device_ripple_colors(device, fraction, color, phase, *, cycle_fraction=None):
+    """Render each RAM stick/onboard/ARGB chain independently in LED order."""
+    colors = [(0, 0, 0)] * len(device.leds)
+    for zone in device.data.zones:
+        if zone.num_leds and zone.name != 'Void':
+            colors[zone.start_idx:zone.start_idx + zone.num_leds] = ripple_colors(
+                zone.num_leds, fraction, color, phase, keep_lit=True, cycle_fraction=cycle_fraction)
+    return colors
+
+
 class Hardware:
     def __init__(self, port):
         from openrgb import OpenRGBClient
@@ -287,21 +297,28 @@ class Hardware:
             for device in devices:
                 pending = []
                 layout = getattr(self, 'accessory_layouts', {}).get(device.id)
+                complete_frame = None
                 if layout is not None:
                     steps, positions = layout
                     axis = ripple_colors(steps, brightness, self.theme.accent(progress, stale, now),
                                          phase, keep_lit=True, cycle_fraction=self.ripple_cycle.fraction)
-                    colors = [axis[position] if position is not None else (0, 0, 0)
-                              for position in positions]
+                    complete_frame = [axis[position] if position is not None else (0, 0, 0)
+                                      for position in positions]
+                elif group in ('ram', 'chassis'):
+                    complete_frame = linear_device_ripple_colors(
+                        device, brightness, self.theme.accent(progress, stale, now), phase,
+                        cycle_fraction=self.ripple_cycle.fraction)
+                if complete_frame is not None:
+                    colors = complete_frame
                     key = (device.id, None)
                     if self.previous_progress.get(key) == colors:
                         continue
                     frame = [self.rgb_color(*color) for color in colors]
-                    # Send one complete frame so keys, side lighting, wrist
-                    # rest and mouse wheel share a single wave position.
+                    # Send one complete frame so every zone shares the same
+                    # wave clock without queuing redundant controller writes.
                     device.set_colors(frame, fast=True)
                     pending.append((None, key, colors, frame))
-                for index, zone in enumerate(device.zones if layout is None else []):
+                for index, zone in enumerate(device.zones if complete_frame is None else []):
                     if zone.leds and zone.name != 'Void':
                         if group == 'gpu':
                             colors = ripple_colors(len(zone.leds), brightness,
