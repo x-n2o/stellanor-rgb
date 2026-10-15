@@ -139,6 +139,35 @@ class GPURippleCycle:
         return GPU_WAVE_SWEEP + GPU_WAVE_PAUSE_MAX - fraction * (GPU_WAVE_PAUSE_MAX - GPU_WAVE_PAUSE_MIN)
 
 
+class RevealRippleCycle(GPURippleCycle):
+    """Anchor resets to emitted frames and show a wave before resetting again."""
+    def __init__(self):
+        super().__init__()
+        self.peak_emitted = False
+
+    def phase(self, fraction, now):
+        fraction = max(0.0, min(1.0, fraction))
+        elapsed = 0.0 if self.started_at is None else now - self.started_at
+        if (self.started_at is None or elapsed < 0 or
+                fraction < self.previous_fraction - 1e-9 or
+                (self.fraction == 0 and fraction > 0) or
+                (elapsed >= self.period and self.peak_emitted)):
+            self.started_at = now
+            self.fraction = fraction
+            self.period = self.period_for(fraction)
+            self.peak_emitted = False
+            elapsed = 0.0
+        # Even a one-LED bar has its full-brightness head at this phase.
+        # A delayed first update must show that head before another reset.
+        first_peak = GPU_WAVE_SWEEP / (GPU_WAVE_TAIL + 2)
+        if fraction > 0 and not self.peak_emitted and elapsed >= first_peak:
+            elapsed = first_peak
+            self.started_at = now - elapsed
+            self.peak_emitted = True
+        self.previous_fraction = fraction
+        return elapsed
+
+
 def gpu_progress_colors(count, fraction, color, *, fill_fraction=None):
     """Fill from LED 0 towards the next PRL; leave unfilled LEDs black.
 
@@ -283,7 +312,7 @@ class Hardware:
             self.previous = {}
             self.previous_progress = {}
             self.ripple_cycle = GPURippleCycle()
-            self.reveal_started_at = None
+            self.reveal_cycle = RevealRippleCycle()
         except BaseException:
             self.client.disconnect()
             raise
@@ -299,12 +328,9 @@ class Hardware:
         if not hasattr(self, 'ripple_cycle'):
             self.ripple_cycle = GPURippleCycle()
         phase = self.ripple_cycle.phase(brightness, now)
-        reveal_phase = phase
-        if getattr(self, 'reveal_started_at', None) != self.ripple_cycle.started_at:
-            # Polling/slow controllers can miss mathematical phase zero.
-            # Still send a black first frame for every newly observed cycle.
-            self.reveal_started_at = self.ripple_cycle.started_at
-            reveal_phase = 0.0
+        if not hasattr(self, 'reveal_cycle'):
+            self.reveal_cycle = RevealRippleCycle()
+        reveal_phase = self.reveal_cycle.phase(brightness, now)
         for group, devices in self.devices.items():
             for device in devices:
                 pending = []
@@ -428,6 +454,7 @@ def run(args):
         print(json.dumps(Metrics().read(), indent=2))
         return
     theme = load_theme(args.pearl_theme)
+    theme.configure(args.theme_config or args.pearl_status.parent / 'theme.json')
     hardware = Hardware(args.port)
     hardware.theme = theme
     running = True
@@ -467,6 +494,8 @@ def main():
     parser.add_argument("--metrics-only", action="store_true")
     parser.add_argument("--pearl-theme", type=Path, required=True)
     parser.add_argument("--pearl-status", type=Path, required=True)
+    parser.add_argument("--theme-config", type=Path,
+                        help="Shared colour settings (default: theme.json beside --pearl-status)")
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")

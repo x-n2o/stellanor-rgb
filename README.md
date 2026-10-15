@@ -12,8 +12,9 @@ lights.sh off    # Stop animation, turn all detected RGB off, sleep the LCD
 lights.sh        # Toggle, accounting for services started at login
 ```
 
-All devices share the Pearl payout status colour: cyan during progress, green
-when the payout threshold is reached, and amber for stale pool data. Brightness
+All RGB devices use the shared configurable colour during progress and after
+the payout threshold is reached. Stale pool data uses amber, or the configured
+colour when monochrome mode is enabled. Brightness
 tracks progress towards the next whole PRL: a balance of 2.25 PRL gives 25%
 brightness, 2.99 gives 99%, and 3.00 resets to 0%, with no minimum. The controller
 uses TRCC's `next_prl_progress`, falling back to fractional total pool balance
@@ -30,7 +31,10 @@ dimmer. The completed bar holds during the pause, then clears for the next sweep
 Each sweep takes one second. The following pause decreases linearly from two
 seconds at 0% progress to 0.3 seconds at 100%. Sweep timing and length are latched
 at cycle boundaries, so live progress updates cannot jump the wave backwards or
-pre-illuminate newly added positions before the next sweep. Keyboard columns,
+pre-illuminate newly added positions before the next sweep. Reveal timing starts
+from the emitted black frame; delayed updates extend the cycle so a visible wave
+appears before another reset. RAM and chassis retain their existing clock.
+Keyboard columns,
 side lighting and the U-shaped wrist rest share the horizontal axis; the mouse
 uses horizontal coordinates across both sides of its perimeter and its wheel.
 Keyboard matrix holes and Void slots remain black. Each accessory receives one
@@ -52,6 +56,19 @@ loads `pearl_theme.py` directly from that checkout for the palette and brightnes
 scaling; update that module alongside this controller. Override its location with
 `LIGHTS_PEARL_REPO` at install. Install and
 run `pearl watch --install-service` in the stellanor-mining project first.
+
+Configure both RGB and the complete TRCC dashboard from the mining checkout:
+
+```sh
+uv run python -m pearl_theme --color red --monochrome
+uv run python -m pearl_theme --color '#ff6600' --no-monochrome
+uv run python -m pearl_theme --reset
+```
+
+Settings persist in `theme.json` beside `--pearl-status` and reload automatically.
+Use `--theme-config PATH` for a different shared settings file. Monochrome mode
+tints all LCD elements and RGB warnings with the selected colour; disabling it
+retains the chosen accent while restoring the other LCD colours and amber warnings.
 
 All detected Direct-mode accessories use one SDK connection and base brightness
 value; all supported devices overlay full-brightness ripple highlights.

@@ -201,7 +201,9 @@ class StatsTest(unittest.TestCase):
         hardware.previous_progress = {}
         hardware.ripple_cycle = rgb.GPURippleCycle()
         hardware.ripple_cycle.phase(.5, 0)
-        hardware.reveal_started_at = hardware.ripple_cycle.started_at
+        hardware.reveal_cycle = rgb.RevealRippleCycle()
+        hardware.reveal_cycle.phase(.5, 0)
+        hardware.reveal_cycle.phase(.5, .2)
         hardware.theme = theme
         hardware.rgb_color = lambda *channels: channels
         for stale in [False, True]:
@@ -341,6 +343,46 @@ class StatsTest(unittest.TestCase):
         self.assertEqual(rgb.ripple_colors(10, .1, color, 1.5, reveal=True, cycle_fraction=0),
                          [(0, 0, 0)] * 10)
 
+    def test_delayed_updates_show_a_bright_reveal_between_black_resets(self):
+        from types import SimpleNamespace
+        color = (255, 0, 0)
+        for interval in (.6, 2.2):
+            with self.subTest(interval=interval):
+                gpu = linear_device(0, [('GPU', 30)])
+                accessories = [linear_device(1, [('Keyboard', 26)]),
+                               linear_device(2, [('Mouse', 6)])]
+                ram = linear_device(3, [('RAM', 12)])
+                hardware = rgb.Hardware.__new__(rgb.Hardware)
+                hardware.devices = {'gpu': [gpu], 'accessories': accessories, 'ram': [ram]}
+                hardware.accessory_layouts = {d.id: (len(d.leds), list(range(len(d.leds))))
+                                              for d in accessories}
+                hardware.previous_progress = {}
+                hardware.rgb_color = lambda *channels: channels
+                hardware.theme = SimpleNamespace(accent=lambda *args: color)
+                for zone in gpu.zones:
+                    zone.colors = []
+                    zone.set_colors.side_effect = lambda frame, fast=False, z=zone: setattr(z, 'colors', frame)
+                seen_peak = [False] * 3
+                resets = 0
+                ram_cycle = rgb.GPURippleCycle()
+                for tick in range(16):
+                    now = round(tick * interval, 6)
+                    hardware.write_progress(.5, now, brightness=.5)
+                    frames = [gpu.zones[0].colors, *(device.colors for device in accessories)]
+                    if not any(any(pixel) for pixel in frames[0]):
+                        if tick:
+                            self.assertTrue(all(seen_peak))
+                        resets += 1
+                        seen_peak = [False] * 3
+                        self.assertTrue(all(not any(any(pixel) for pixel in frame) for frame in frames))
+                    for index, frame in enumerate(frames):
+                        seen_peak[index] |= color in frame
+                        self.assertEqual(frame[len(frame)//2:], [(0, 0, 0)] * (len(frame)//2))
+                    phase = ram_cycle.phase(.5, now)
+                    self.assertEqual(ram.colors, rgb.linear_device_ripple_colors(
+                        ram, .5, color, phase, cycle_fraction=ram_cycle.fraction))
+                self.assertGreater(resets, 1)
+
     def test_keyboard_layout_uses_columns_and_the_wrist_rest_perimeter(self):
         from types import SimpleNamespace
         def zone(name, start, size, matrix=None):
@@ -429,13 +471,13 @@ class StatsTest(unittest.TestCase):
         hardware.theme = SimpleNamespace(accent=lambda *args: color)
         hardware.write_progress(3.49, 216700, brightness=.49)
         hardware.write_progress(3.49, 216700.6, brightness=.49)
-        self.assertEqual(zone.colors.index(color), 10)
-        self.assertEqual(accessory.colors.index(color), 10)
+        self.assertEqual(zone.colors.index(color), 2)
+        self.assertEqual(accessory.colors.index(color), 2)
         self.assertEqual(ram.colors.index(color), 10)
         self.assertEqual(chassis.colors.index(color), 10)
         hardware.write_progress(3.49001, 216700.65, brightness=.49001)
-        self.assertEqual(zone.colors.index(color), 11)
-        self.assertEqual(accessory.colors.index(color), 11)
+        self.assertEqual(zone.colors.index(color), 3)
+        self.assertEqual(accessory.colors.index(color), 3)
         self.assertEqual(ram.colors.index(color), 11)
         self.assertEqual(chassis.colors.index(color), 11)
 
