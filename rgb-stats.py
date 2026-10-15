@@ -16,6 +16,7 @@ LOG = logging.getLogger("rgb-stats")
 PERIOD = 4.0
 FRAME_INTERVAL = 0.2
 SAMPLE_INTERVAL = 1.0
+CONFIRM_TIMEOUT = 10.0
 
 
 def color_for_load(percent):
@@ -86,6 +87,17 @@ def configure_chassis(device):
     LOG.info("ASUS ARGB header lengths: %s", [len(device.zones[index].leds) for index, _ in headers])
 
 
+def configure_direct(device):
+    mode = next((mode for mode in device.modes if mode.name == 'Direct'), None)
+    if mode is None:
+        raise RuntimeError(f'{device.name} has no per-LED Direct mode')
+    # Brightness is scaled in the shared frame; do not multiply it again by
+    # the RAM controller's default 80% hardware brightness.
+    if mode.brightness is not None and mode.brightness_max is not None:
+        mode.brightness = mode.brightness_max
+    device.set_mode(mode)
+
+
 class Hardware:
     def __init__(self, port):
         from openrgb import OpenRGBClient
@@ -111,14 +123,12 @@ class Hardware:
                 for device in devices:
                     if key == "chassis":
                         configure_chassis(device)
-                    device.set_mode("Direct")
+                    configure_direct(device)
             # All directly detected accessories participate, including Razer.
             selected = {device.id for devices in self.devices.values() for device in devices}
             self.devices['accessories'] = [device for device in self.client.devices if device.id not in selected]
             for device in self.devices['accessories']:
-                if not any(mode.name == 'Direct' for mode in device.modes):
-                    raise RuntimeError(f'{device.name} has no per-LED Direct mode')
-                device.set_mode('Direct')
+                configure_direct(device)
             LOG.info('Synchronized controllers: %s', [d.name for group in self.devices.values() for d in group])
             self.previous = {}
             self.previous_progress = {}
@@ -151,10 +161,16 @@ class Hardware:
                     # OpenRGB queues updates separately for each controller.
                     # Read back after writes to wait for slow RAM/USB queues,
                     # then avoid resending identical frames on every poll.
-                    device.update()
-                    for index, key, colors, frame in pending:
-                        if device.zones[index].colors != frame:
+                    deadline = time.monotonic() + CONFIRM_TIMEOUT
+                    while True:
+                        device.update()
+                        if all(device.zones[index].colors == frame
+                               for index, _, _, frame in pending):
+                            break
+                        if time.monotonic() >= deadline:
                             raise RuntimeError(f'{device.name}: RGB frame was not confirmed')
+                        time.sleep(.05)
+                    for index, key, colors, frame in pending:
                         self.previous_progress[key] = colors
 
     def close(self):

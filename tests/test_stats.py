@@ -9,6 +9,18 @@ spec.loader.exec_module(rgb)
 
 
 class StatsTest(unittest.TestCase):
+    def test_direct_mode_uses_full_hardware_brightness_before_frame_scaling(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        direct = SimpleNamespace(name='Direct', brightness=80, brightness_max=100)
+        device = SimpleNamespace(name='RAM', modes=[direct], set_mode=Mock())
+        rgb.configure_direct(device)
+        self.assertEqual(direct.brightness, 100)
+        device.set_mode.assert_called_once_with(direct)
+        direct.brightness = direct.brightness_max = None
+        rgb.configure_direct(device)
+        self.assertIsNone(direct.brightness)
+
     def test_gradient_landmarks_and_clamping(self):
         for load, expected in [(-1, (0, 255, 0)), (0, (0, 255, 0)),
                                (50, (255, 255, 0)), (100, (255, 0, 0)),
@@ -166,6 +178,7 @@ class StatsTest(unittest.TestCase):
 
     def test_unconfirmed_device_frame_is_not_cached(self):
         from types import SimpleNamespace
+        from unittest.mock import patch
         zone = SimpleNamespace(name='RAM', leds=[None], colors=[(0, 0, 0)],
                                set_colors=lambda *args, **kwargs: None)
         hardware = rgb.Hardware.__new__(rgb.Hardware)
@@ -173,6 +186,27 @@ class StatsTest(unittest.TestCase):
         hardware.previous_progress = {}
         hardware.theme = SimpleNamespace(progress_colors=lambda *args, **kwargs: [(50, 128, 30)])
         hardware.rgb_color = lambda *channels: channels
-        with self.assertRaisesRegex(RuntimeError, 'RGB frame was not confirmed'):
-            hardware.write_progress(2.5, 7, brightness=.5)
+        with patch.object(rgb.time, 'monotonic', side_effect=[0, 11]):
+            with self.assertRaisesRegex(RuntimeError, 'RGB frame was not confirmed'):
+                hardware.write_progress(2.5, 7, brightness=.5)
         self.assertEqual(hardware.previous_progress, {})
+
+    def test_slow_controller_is_polled_without_resending_the_frame(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+        zone = SimpleNamespace(name='RAM', leds=[None], colors=[(0, 0, 0)], set_colors=Mock())
+        updates = []
+        def update():
+            updates.append(True)
+            if len(updates) == 2:
+                zone.colors = [(50, 128, 30)]
+        hardware = rgb.Hardware.__new__(rgb.Hardware)
+        hardware.devices = {'ram': [SimpleNamespace(id=0, name='RAM', zones=[zone], update=update)]}
+        hardware.previous_progress = {}
+        hardware.theme = SimpleNamespace(progress_colors=lambda *args, **kwargs: [(50, 128, 30)])
+        hardware.rgb_color = lambda *channels: channels
+        with patch.object(rgb.time, 'sleep'):
+            hardware.write_progress(2.5, 7, brightness=.5)
+        self.assertEqual(len(updates), 2)
+        zone.set_colors.assert_called_once()
+        self.assertEqual(hardware.previous_progress, {(0, 0): [(50, 128, 30)]})
