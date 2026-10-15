@@ -104,10 +104,56 @@ class StatsTest(unittest.TestCase):
         from datetime import datetime
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'pearl.json'
-            self.assertEqual(rgb.read_progress(path), (0, True))
-            state = {'payout_progress': 0.39, 'pool_updated_at': datetime.now().isoformat(), 'errors': {}}
+            self.assertEqual(rgb.read_progress(path), (0, 0, True))
+            state = {'payout_progress': 0.39, 'balance': {'total': 2.25},
+                     'pool_updated_at': datetime.now().isoformat(), 'errors': {}}
             path.write_text(json.dumps(state))
-            self.assertEqual(rgb.read_progress(path), (0.39, False))
+            self.assertEqual(rgb.read_progress(path), (0.39, .25, False))
             state['errors'] = {'pool': 'offline'}
             path.write_text(json.dumps(state))
-            self.assertEqual(rgb.read_progress(path), (0.39, True))
+            self.assertEqual(rgb.read_progress(path), (0.39, .25, True))
+
+    def test_next_prl_brightness_resets_at_each_whole_coin(self):
+        import json
+        from datetime import datetime
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'pearl.json'
+            for total, expected in [(0, 0), (2.25, .25), (2.99, .99), (3, 0), (3.5, .5)]:
+                path.write_text(json.dumps({'payout_progress': total,
+                    'balance': {'total': total}, 'pool_updated_at': datetime.now().isoformat()}))
+                progress, brightness, stale = rgb.read_progress(path)
+                self.assertEqual(progress, total)
+                self.assertAlmostEqual(brightness, expected)
+                self.assertFalse(stale)
+
+    def test_published_next_prl_fraction_is_preferred_and_validated(self):
+        import json
+        from datetime import datetime
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'pearl.json'
+            state = {'payout_progress': 2.9, 'balance': {'total': 2.9},
+                     'pool_updated_at': datetime.now().isoformat(), 'next_prl_progress': .5}
+            path.write_text(json.dumps(state))
+            self.assertEqual(rgb.read_progress(path), (2.9, .5, False))
+            for value in [float('nan'), float('inf'), -.1, 1.1, 'invalid']:
+                state['next_prl_progress'] = value
+                path.write_text(json.dumps(state))
+                self.assertEqual(rgb.read_progress(path), (0, 0, True))
+
+    def test_all_hardware_zones_receive_the_same_next_prl_brightness(self):
+        from types import SimpleNamespace
+        calls = []
+        class Zone:
+            name = 'Keyboard'
+            leds = [None] * 4
+            def set_colors(self, colors, fast=False):
+                calls.append((colors, fast))
+        hardware = rgb.Hardware.__new__(rgb.Hardware)
+        hardware.devices = {'accessories': [SimpleNamespace(zones=[Zone(), Zone()])]}
+        def colors(count, progress, now, stale, *, brightness):
+            self.assertEqual((count, progress, now, stale, brightness), (4, 2.5, 7, False, .5))
+            return [(50, 128, 30)] * count
+        hardware.theme = SimpleNamespace(progress_colors=colors)
+        hardware.rgb_color = lambda *channels: channels
+        hardware.write_progress(2.5, 7, brightness=.5)
+        self.assertEqual(calls, [([(50, 128, 30)] * 4, True)] * 2)

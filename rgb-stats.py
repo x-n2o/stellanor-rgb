@@ -132,12 +132,13 @@ class Hardware:
                     device.set_color(self.rgb_color(*colors[key]), fast=True)
         self.previous = colors.copy()
 
-    def write_progress(self, progress, now, stale=False):
+    def write_progress(self, progress, now, stale=False, *, brightness=1.0):
         for devices in self.devices.values():
             for device in devices:
                 for zone in device.zones:
                     if zone.leds and zone.name != 'Void':
-                        colors = self.theme.progress_colors(len(zone.leds), progress, now, stale)
+                        colors = self.theme.progress_colors(len(zone.leds), progress, now, stale,
+                                                           brightness=brightness)
                         zone.set_colors([self.rgb_color(*color) for color in colors], fast=True)
 
     def close(self):
@@ -159,13 +160,24 @@ def read_progress(path):
         progress = float(state['payout_progress'])
         if not math.isfinite(progress):
             raise ValueError('invalid payout progress')
+        # Reuse the dashboard's next-PRL fraction when available. Older status
+        # writers expose the same total balance but not the derived fraction.
+        brightness = state.get('next_prl_progress')
+        if brightness is None:
+            total = float(state['balance']['total'])
+            if not math.isfinite(total) or total < 0:
+                raise ValueError('invalid pool balance')
+            brightness = total % 1.0
+        brightness = float(brightness)
+        if not math.isfinite(brightness) or not 0 <= brightness <= 1:
+            raise ValueError('invalid next PRL progress')
         from datetime import datetime
         updated = state.get('pool_updated_at')
         stale = (not updated or time.time() - datetime.fromisoformat(updated).timestamp() > 600
                  or 'pool' in state.get('errors', {}))
-        return progress, stale
+        return progress, brightness, stale
     except (OSError, ValueError, KeyError, TypeError):
-        return 0.0, True
+        return 0.0, 0.0, True
 
 
 def interpolated(before, after, elapsed):
@@ -210,11 +222,14 @@ def run(args):
         ready = False
         while running:
             now = time.monotonic()
-            progress, stale = read_progress(args.pearl_status)
-            hardware.write_progress(progress, now, stale)
+            progress, brightness, stale = read_progress(args.pearl_status)
+            hardware.write_progress(progress, now, stale, brightness=brightness)
             if args.status_file:
-                write_status(args.status_file, {'payout_progress': progress, 'stale': stale},
-                             {'preview': theme.progress_colors(12, progress, now, stale)}, now)
+                write_status(args.status_file, {'payout_progress': progress,
+                             'next_prl_progress': brightness, 'brightness_percent': brightness * 100,
+                             'stale': stale},
+                             {'preview': theme.progress_colors(12, progress, now, stale,
+                                                               brightness=brightness)}, now)
             if not ready:
                 notify_ready()
                 ready = True
