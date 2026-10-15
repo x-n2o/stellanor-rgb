@@ -16,7 +16,7 @@ Each LED zone fills with the same Pearl payout progress. Cyan marks progress,
 green marks the payout threshold reached, and amber marks stale pool data.
 The status colour stays steady. Brightness tracks progress towards the next
 whole PRL: a total pool balance of 2.25 PRL gives 25% brightness, 2.99 PRL gives
-99%, and 3.00 PRL resets to 0%. Other devices have no timed brightness pulse or
+99%, and 3.00 PRL resets to 0%. RAM and motherboard lighting have no timed brightness pulse or
 colour sweep. The controller uses the dashboard's
 `next_prl_progress` value, or the fractional total balance with older snapshots.
 The GPU's 30 LEDs instead fill from LED 0 (initially left to right) using that
@@ -26,12 +26,22 @@ dimmer. A wave travels left to right only within the filled GPU section: its
 leading LED reaches 100% brightness in the shared status colour, with a fading
 tail over the dim progress bar. Each sweep takes one second regardless of the
 filled length, followed by a pause that decreases linearly from two seconds
-at 0% progress to 0.3 seconds at 100%. Progress updates retain the current
-sweep and pause; the new pause duration takes effect at the next cycle.
-Unfilled LEDs stay off throughout. The GPU resets its bar
-at each whole PRL. Unfilled LEDs on other devices remain dim relative to the filled portion.
+at 0% progress to 0.3 seconds at 100%. Sweep timing and length are latched
+at cycle boundaries, so live progress updates cannot jump the wave backwards. Unfilled LEDs stay off throughout. The GPU resets its bar
+at each whole PRL. Unfilled RAM and motherboard LEDs remain dim relative to the filled portion.
 Rewards still maturing count towards progress, just
 as in `pearl watch`; a full bar can remain full while awaiting confirmation.
+
+The BlackWidow V4 Pro and Basilisk V3 Pro 35K use the same ripple timing and
+limit the ripple to the start through the current next-PRL percentage. Their background
+brightness follows next-PRL progress exactly, with no minimum; at a whole-coin
+reset the device is black. Every physical LED retains that background brightness,
+including beyond the ripple's progress endpoint. The keyboard
+wave moves left to right across key columns, side lighting and the wrist rest;
+the mouse wave uses the reversed palm-to-scroll-wheel order across both
+sides of its perimeter. Only the GPU leaves the unfilled section fully off.
+Keyboard matrix holes and Void slots remain black. Each accessory receives
+one complete frame, so its zones share the same wave position.
 
 The controller reads `pearl-watch-trcc/status.json`, emitted by Pearl's shared
 monitor. It makes no pool requests or utilization queries. The same
@@ -42,7 +52,7 @@ scaling; update that module alongside this controller. Override its location wit
 run `pearl watch --install-service` in the stellanor-mining project first.
 
 All detected Direct-mode accessories use one SDK connection and base brightness
-value; the GPU wave overlays a full-brightness highlight on its filled section.
+value; the GPU, keyboard and mouse waves overlay full-brightness highlights.
 Only changed frames are sent. Each device update is read back before sending
 more, so slower RAM and keyboard controllers cannot accumulate old animation
 frames while faster case lighting moves ahead. This confirms the SDK state;

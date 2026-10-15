@@ -152,10 +152,14 @@ def gpu_progress_colors(count, fraction, color):
             for index in range(count)]
 
 
-def gpu_ripple_colors(count, fraction, color, phase, *, cycle_fraction=None):
-    """Render elapsed time within one anchored sweep/pause cycle."""
+def ripple_colors(count, fraction, color, phase, *, keep_lit=False, cycle_fraction=None):
+    """Sweep through next-PRL progress, optionally keeping the rest dimly lit."""
     fraction = max(0.0, min(1.0, fraction))
-    colors = gpu_progress_colors(count, fraction, color)
+    if keep_lit:
+        background = tuple(round(channel * fraction) for channel in color)
+        colors = [background] * count
+    else:
+        colors = gpu_progress_colors(count, fraction, color)
     filled = math.ceil(gpu_fill_length(count, fraction))
     cycle_filled = math.ceil(gpu_fill_length(count, fraction if cycle_fraction is None else cycle_fraction))
     if not filled or not cycle_filled or phase >= GPU_WAVE_SWEEP:
@@ -169,6 +173,62 @@ def gpu_ripple_colors(count, fraction, color, phase, *, cycle_fraction=None):
             colors[index] = tuple(max(base, round(channel * intensity))
                                   for base, channel in zip(colors[index], color))
     return colors
+
+
+def accessory_layout(device):
+    """Return physical-axis coordinates for the connected Razer models.
+
+    Matrix holes and Void LEDs remain unmapped. Wrist-rest and Basilisk
+    perimeter coordinates follow SignalRGB's device layouts, rather than
+    treating their U-shaped strips as straight lines.
+    """
+    name = getattr(device, 'name', '').casefold()
+    if name == 'razer blackwidow v4 pro':
+        keyboard = next(zone for zone in device.data.zones if zone.matrix_map)
+        columns = [column for row in keyboard.matrix_map for column, led in enumerate(row)
+                   if led is not None]
+        first, last = min(columns), max(columns)
+        steps = max(len(row) for row in keyboard.matrix_map) + 2
+        positions = [None] * len(device.leds)
+        for row in keyboard.matrix_map:
+            for column, led in enumerate(row):
+                if led is not None:
+                    positions[led] = 1 + round((column - first) * (steps - 3) / max(1, last - first))
+        wrist = [0, 0, 0, 0, 1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 24, 24, 24, 24]
+        for zone in device.data.zones:
+            if zone.name == 'Underglow Left':
+                coordinates = [0] * zone.num_leds
+            elif zone.name == 'Underglow Right':
+                coordinates = [steps - 1] * zone.num_leds
+            elif zone.name == 'Underglow Wrist Rest':
+                if zone.num_leds != len(wrist):
+                    raise RuntimeError('Unexpected BlackWidow wrist-rest LED layout')
+                coordinates = [round(x * (steps - 1) / 24) for x in wrist]
+            else:
+                continue
+            positions[zone.start_idx:zone.start_idx + zone.num_leds] = coordinates
+        return steps, positions
+    if name.startswith('razer basilisk v3 pro 35k'):
+        # Viewed from above: wheel at the front, strip down the left side,
+        # around the palm end, then back up the right side.
+        strip = [1, 2, 3, 4, 5, 6, 4, 3, 2, 1, 0]
+        positions = [None] * len(device.leds)
+        for zone in device.data.zones:
+            if zone.name == 'Scroll Wheel':
+                coordinates = [0] * zone.num_leds
+            elif zone.name == 'Logo':
+                coordinates = [4] * zone.num_leds
+            elif zone.name == 'LED Strip':
+                if zone.num_leds != len(strip):
+                    raise RuntimeError('Unexpected Basilisk perimeter LED layout')
+                coordinates = strip
+            else:
+                continue
+            positions[zone.start_idx:zone.start_idx + zone.num_leds] = coordinates
+        # The connected wireless Phantom model's physical direction was
+        # checked by the user and is opposite the reference layout's Y axis.
+        return 7, [6 - position if position is not None else None for position in positions]
+    return None
 
 
 class Hardware:
@@ -202,10 +262,12 @@ class Hardware:
             self.devices['accessories'] = [device for device in self.client.devices if device.id not in selected]
             for device in self.devices['accessories']:
                 configure_direct(device)
+            self.accessory_layouts = {device.id: accessory_layout(device)
+                                      for device in self.devices['accessories']}
             LOG.info('Synchronized controllers: %s', [d.name for group in self.devices.values() for d in group])
             self.previous = {}
             self.previous_progress = {}
-            self.gpu_cycles = {}
+            self.ripple_cycle = GPURippleCycle()
         except BaseException:
             self.client.disconnect()
             raise
@@ -218,17 +280,33 @@ class Hardware:
         self.previous = colors.copy()
 
     def write_progress(self, progress, now, stale=False, *, brightness=1.0):
+        if not hasattr(self, 'ripple_cycle'):
+            self.ripple_cycle = GPURippleCycle()
+        phase = self.ripple_cycle.phase(brightness, now)
         for group, devices in self.devices.items():
             for device in devices:
                 pending = []
-                for index, zone in enumerate(device.zones):
+                layout = getattr(self, 'accessory_layouts', {}).get(device.id)
+                if layout is not None:
+                    steps, positions = layout
+                    axis = ripple_colors(steps, brightness, self.theme.accent(progress, stale, now),
+                                         phase, keep_lit=True, cycle_fraction=self.ripple_cycle.fraction)
+                    colors = [axis[position] if position is not None else (0, 0, 0)
+                              for position in positions]
+                    key = (device.id, None)
+                    if self.previous_progress.get(key) == colors:
+                        continue
+                    frame = [self.rgb_color(*color) for color in colors]
+                    # Send one complete frame so keys, side lighting, wrist
+                    # rest and mouse wheel share a single wave position.
+                    device.set_colors(frame, fast=True)
+                    pending.append((None, key, colors, frame))
+                for index, zone in enumerate(device.zones if layout is None else []):
                     if zone.leds and zone.name != 'Void':
                         if group == 'gpu':
-                            cycle = self.gpu_cycles.setdefault((device.id, index), GPURippleCycle())
-                            phase = cycle.phase(brightness, now)
-                            colors = gpu_ripple_colors(len(zone.leds), brightness,
-                                                       self.theme.accent(progress, stale, now), phase,
-                                                       cycle_fraction=cycle.fraction)
+                            colors = ripple_colors(len(zone.leds), brightness,
+                                                   self.theme.accent(progress, stale, now), phase,
+                                                   cycle_fraction=self.ripple_cycle.fraction)
                         else:
                             colors = self.theme.progress_colors(len(zone.leds), progress, now, stale,
                                                                brightness=brightness)
@@ -245,7 +323,7 @@ class Hardware:
                     deadline = time.monotonic() + CONFIRM_TIMEOUT
                     while True:
                         device.update()
-                        if all(device.zones[index].colors == frame
+                        if all((device.colors if index is None else device.zones[index].colors) == frame
                                for index, _, _, frame in pending):
                             break
                         if time.monotonic() >= deadline:
