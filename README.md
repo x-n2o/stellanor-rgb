@@ -14,20 +14,39 @@ lights.sh        # Toggle, accounting for services started at login
 
 Each LED zone fills with the same Pearl payout progress. Cyan marks progress,
 green marks the payout threshold reached, and amber marks stale pool data.
-A shared twelve-second colour sweep and four-second pulse animate the filled
-portion and partial leading LED. The sweep continues above the payout threshold
-while rewards mature, so completion never leaves the lights at one fixed colour.
-Unfilled LEDs remain dim. Rewards still maturing count towards progress, just
+The status colour stays steady. Brightness tracks progress towards the next
+whole PRL: a total pool balance of 2.25 PRL gives 25% brightness, 2.99 PRL gives
+99%, and 3.00 PRL resets to 0%. Other devices have no timed brightness pulse or
+colour sweep. The controller uses the dashboard's
+`next_prl_progress` value, or the fractional total balance with older snapshots.
+The GPU's 30 LEDs instead fill from LED 0 (initially left to right) using that
+same next-1-PRL fraction: 50% lights the first 15 LEDs at 50% brightness and
+leaves the other 15 off. A partially filled boundary LED is proportionally
+dimmer. A wave travels left to right only within the filled GPU section: its
+leading LED reaches 100% brightness in the shared status colour, with a fading
+tail over the dim progress bar. Each sweep takes one second regardless of the
+filled length, followed by a pause that decreases linearly from two seconds
+at 0% progress to 0.3 seconds at 100%. Progress updates retain the current
+sweep and pause; the new pause duration takes effect at the next cycle.
+Unfilled LEDs stay off throughout. The GPU resets its bar
+at each whole PRL. Unfilled LEDs on other devices remain dim relative to the filled portion.
+Rewards still maturing count towards progress, just
 as in `pearl watch`; a full bar can remain full while awaiting confirmation.
 
 The controller reads `pearl-watch-trcc/status.json`, emitted by Pearl's shared
 monitor. It makes no pool requests or utilization queries. The same
 `payout_progress` calculation drives the terminal, LCD and RGB. The controller
-loads `pearl_theme.py` directly from that checkout for the palette and pulse
-shared with the LCD. Override its location with `LIGHTS_PEARL_REPO` at install. Install and
+loads `pearl_theme.py` directly from that checkout for the palette and brightness
+scaling; update that module alongside this controller. Override its location with
+`LIGHTS_PEARL_REPO` at install. Install and
 run `pearl watch --install-service` in the stellanor-mining project first.
 
-All detected Direct-mode accessories use one SDK connection and animation clock.
+All detected Direct-mode accessories use one SDK connection and base brightness
+value; the GPU wave overlays a full-brightness highlight on its filled section.
+Only changed frames are sent. Each device update is read back before sending
+more, so slower RAM and keyboard controllers cannot accumulate old animation
+frames while faster case lighting moves ahead. This confirms the SDK state;
+physical colour matching still depends on each device's LEDs.
 Each ASUS ARGB header is configured to its supported maximum of 120 slots at
 runtime; this is not a measured physical chain length. USB/SMBus writes are
 sequential, so synchronization is approximate at the transport level.
@@ -72,6 +91,25 @@ happens once per SDK process. Manual commands reuse that SDK when running.
 OpenRGB owns all RGB writes during animation. Manual off commands stop the
 animation first and include every detected USB accessory. The SDK binds only
 to localhost. The supplied detector settings include the connected Razer models.
+
+When OpenRazer/Polychromatic is installed alongside this controller, set these
+options in `~/.config/openrazer/razer.conf`, then restart the user daemon with
+`systemctl --user restart openrazer-daemon.service` before starting RGB sync:
+
+```ini
+[Startup]
+devices_off_on_screensaver = False
+battery_notifier = False
+restore_persistence = False
+```
+
+OpenRazer's lock-screen blackout otherwise sets Razer brightness to zero while
+OpenRGB continues sending animation frames. Background battery polling can also
+collide with OpenRGB's direct USB traffic. Before using Polychromatic, stop both
+`stellanor-rgb-stats.service` and `stellanor-openrgb.service`. If a keyboard is
+already dark, restore brightness in Polychromatic while those services are
+stopped. Start `stellanor-rgb-stats.service` again to resume synchronized lighting.
+These are the system services controlled with `sudo systemctl`.
 
 Run `lights.sh` as your normal user. Set `LIGHTS_OPENRGB_DIR` or
 `LIGHTS_STATS_PYTHON` before installation to override the local tools.

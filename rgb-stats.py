@@ -14,8 +14,13 @@ import time
 
 LOG = logging.getLogger("rgb-stats")
 PERIOD = 4.0
-FRAME_INTERVAL = 0.2
+FRAME_INTERVAL = 0.05
 SAMPLE_INTERVAL = 1.0
+CONFIRM_TIMEOUT = 10.0
+GPU_WAVE_SWEEP = 1.0
+GPU_WAVE_PAUSE_MIN = 0.3
+GPU_WAVE_PAUSE_MAX = 2.0
+GPU_WAVE_TAIL = 3
 
 
 def color_for_load(percent):
@@ -86,6 +91,86 @@ def configure_chassis(device):
     LOG.info("ASUS ARGB header lengths: %s", [len(device.zones[index].leds) for index, _ in headers])
 
 
+def configure_direct(device):
+    mode = next((mode for mode in device.modes if mode.name == 'Direct'), None)
+    if mode is None:
+        raise RuntimeError(f'{device.name} has no per-LED Direct mode')
+    # Brightness is scaled in the shared frame; do not multiply it again by
+    # the RAM controller's default 80% hardware brightness.
+    if mode.brightness is not None and mode.brightness_max is not None:
+        mode.brightness = mode.brightness_max
+    device.set_mode(mode)
+
+
+def gpu_fill_length(count, fraction):
+    """Discard floating-point noise at exact whole-LED boundaries."""
+    length = max(0.0, min(1.0, fraction)) * count
+    nearest = round(length)
+    return nearest if math.isclose(length, nearest, rel_tol=0.0, abs_tol=1e-9) else length
+
+
+class GPURippleCycle:
+    """Keep one sweep and pause anchored while live progress changes."""
+    def __init__(self):
+        self.started_at = None
+        self.fraction = 0.0
+        self.previous_fraction = 0.0
+        self.period = 0.0
+
+    def phase(self, fraction, now):
+        fraction = max(0.0, min(1.0, fraction))
+        if (self.started_at is None or now < self.started_at or
+                fraction < self.previous_fraction - 1e-9):
+            # A coin rollover/shrinking bar starts a new sweep deliberately.
+            self.started_at = now
+            self.fraction = fraction
+            self.period = self.period_for(fraction)
+        elif now >= self.started_at + self.period:
+            self.started_at += self.period
+            self.fraction = fraction
+            self.period = self.period_for(fraction)
+            # Skip missed cycles without replaying a backlog of frames.
+            self.started_at += math.floor((now - self.started_at) / self.period) * self.period
+        self.previous_fraction = fraction
+        return now - self.started_at
+
+    @staticmethod
+    def period_for(fraction):
+        return GPU_WAVE_SWEEP + GPU_WAVE_PAUSE_MAX - fraction * (GPU_WAVE_PAUSE_MAX - GPU_WAVE_PAUSE_MIN)
+
+
+def gpu_progress_colors(count, fraction, color):
+    """Fill from LED 0 towards the next PRL; leave unfilled LEDs black.
+
+    Filled LEDs retain next-PRL brightness, with a proportionally dimmer
+    boundary LED for fractions between whole LEDs.
+    """
+    fraction = max(0.0, min(1.0, fraction))
+    length = gpu_fill_length(count, fraction)
+    return [tuple(round(channel * fraction * max(0.0, min(1.0, length - index)))
+                  for channel in color)
+            for index in range(count)]
+
+
+def gpu_ripple_colors(count, fraction, color, phase, *, cycle_fraction=None):
+    """Render elapsed time within one anchored sweep/pause cycle."""
+    fraction = max(0.0, min(1.0, fraction))
+    colors = gpu_progress_colors(count, fraction, color)
+    filled = math.ceil(gpu_fill_length(count, fraction))
+    cycle_filled = math.ceil(gpu_fill_length(count, fraction if cycle_fraction is None else cycle_fraction))
+    if not filled or not cycle_filled or phase >= GPU_WAVE_SWEEP:
+        return colors
+    # Let the tail leave the filled section before the next sweep begins.
+    head = int(phase / GPU_WAVE_SWEEP * (cycle_filled + GPU_WAVE_TAIL))
+    for index in range(filled):
+        distance = head - index
+        if 0 <= distance < GPU_WAVE_TAIL:
+            intensity = (1 + math.cos(math.pi * distance / GPU_WAVE_TAIL)) / 2
+            colors[index] = tuple(max(base, round(channel * intensity))
+                                  for base, channel in zip(colors[index], color))
+    return colors
+
+
 class Hardware:
     def __init__(self, port):
         from openrgb import OpenRGBClient
@@ -111,16 +196,16 @@ class Hardware:
                 for device in devices:
                     if key == "chassis":
                         configure_chassis(device)
-                    device.set_mode("Direct")
+                    configure_direct(device)
             # All directly detected accessories participate, including Razer.
             selected = {device.id for devices in self.devices.values() for device in devices}
             self.devices['accessories'] = [device for device in self.client.devices if device.id not in selected]
             for device in self.devices['accessories']:
-                if not any(mode.name == 'Direct' for mode in device.modes):
-                    raise RuntimeError(f'{device.name} has no per-LED Direct mode')
-                device.set_mode('Direct')
+                configure_direct(device)
             LOG.info('Synchronized controllers: %s', [d.name for group in self.devices.values() for d in group])
             self.previous = {}
+            self.previous_progress = {}
+            self.gpu_cycles = {}
         except BaseException:
             self.client.disconnect()
             raise
@@ -132,13 +217,42 @@ class Hardware:
                     device.set_color(self.rgb_color(*colors[key]), fast=True)
         self.previous = colors.copy()
 
-    def write_progress(self, progress, now, stale=False):
-        for devices in self.devices.values():
+    def write_progress(self, progress, now, stale=False, *, brightness=1.0):
+        for group, devices in self.devices.items():
             for device in devices:
-                for zone in device.zones:
+                pending = []
+                for index, zone in enumerate(device.zones):
                     if zone.leds and zone.name != 'Void':
-                        colors = self.theme.progress_colors(len(zone.leds), progress, now, stale)
-                        zone.set_colors([self.rgb_color(*color) for color in colors], fast=True)
+                        if group == 'gpu':
+                            cycle = self.gpu_cycles.setdefault((device.id, index), GPURippleCycle())
+                            phase = cycle.phase(brightness, now)
+                            colors = gpu_ripple_colors(len(zone.leds), brightness,
+                                                       self.theme.accent(progress, stale, now), phase,
+                                                       cycle_fraction=cycle.fraction)
+                        else:
+                            colors = self.theme.progress_colors(len(zone.leds), progress, now, stale,
+                                                               brightness=brightness)
+                        key = (device.id, index)
+                        if self.previous_progress.get(key) == colors:
+                            continue
+                        frame = [self.rgb_color(*color) for color in colors]
+                        zone.set_colors(frame, fast=True)
+                        pending.append((index, key, colors, frame))
+                if pending:
+                    # OpenRGB queues updates separately for each controller.
+                    # Read back after writes to wait for slow RAM/USB queues,
+                    # then avoid resending identical frames on every poll.
+                    deadline = time.monotonic() + CONFIRM_TIMEOUT
+                    while True:
+                        device.update()
+                        if all(device.zones[index].colors == frame
+                               for index, _, _, frame in pending):
+                            break
+                        if time.monotonic() >= deadline:
+                            raise RuntimeError(f'{device.name}: RGB frame was not confirmed')
+                        time.sleep(.05)
+                    for index, key, colors, frame in pending:
+                        self.previous_progress[key] = colors
 
     def close(self):
         self.client.disconnect()
@@ -159,13 +273,24 @@ def read_progress(path):
         progress = float(state['payout_progress'])
         if not math.isfinite(progress):
             raise ValueError('invalid payout progress')
+        # Reuse the dashboard's next-PRL fraction when available. Older status
+        # writers expose the same total balance but not the derived fraction.
+        brightness = state.get('next_prl_progress')
+        if brightness is None:
+            total = float(state['balance']['total'])
+            if not math.isfinite(total) or total < 0:
+                raise ValueError('invalid pool balance')
+            brightness = total % 1.0
+        brightness = float(brightness)
+        if not math.isfinite(brightness) or not 0 <= brightness <= 1:
+            raise ValueError('invalid next PRL progress')
         from datetime import datetime
         updated = state.get('pool_updated_at')
         stale = (not updated or time.time() - datetime.fromisoformat(updated).timestamp() > 600
                  or 'pool' in state.get('errors', {}))
-        return progress, stale
+        return progress, brightness, stale
     except (OSError, ValueError, KeyError, TypeError):
-        return 0.0, True
+        return 0.0, 0.0, True
 
 
 def interpolated(before, after, elapsed):
@@ -210,11 +335,14 @@ def run(args):
         ready = False
         while running:
             now = time.monotonic()
-            progress, stale = read_progress(args.pearl_status)
-            hardware.write_progress(progress, now, stale)
+            progress, brightness, stale = read_progress(args.pearl_status)
+            hardware.write_progress(progress, now, stale, brightness=brightness)
             if args.status_file:
-                write_status(args.status_file, {'payout_progress': progress, 'stale': stale},
-                             {'preview': theme.progress_colors(12, progress, now, stale)}, now)
+                write_status(args.status_file, {'payout_progress': progress,
+                             'next_prl_progress': brightness, 'brightness_percent': brightness * 100,
+                             'stale': stale},
+                             {'preview': theme.progress_colors(12, progress, now, stale,
+                                                               brightness=brightness)}, now)
             if not ready:
                 notify_ready()
                 ready = True
