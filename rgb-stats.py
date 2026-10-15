@@ -139,35 +139,71 @@ class GPURippleCycle:
         return GPU_WAVE_SWEEP + GPU_WAVE_PAUSE_MAX - fraction * (GPU_WAVE_PAUSE_MAX - GPU_WAVE_PAUSE_MIN)
 
 
-def gpu_progress_colors(count, fraction, color):
+class RevealRippleCycle(GPURippleCycle):
+    """Anchor resets to emitted frames and show a wave before resetting again."""
+    def __init__(self):
+        super().__init__()
+        self.peak_emitted = False
+
+    def phase(self, fraction, now):
+        fraction = max(0.0, min(1.0, fraction))
+        elapsed = 0.0 if self.started_at is None else now - self.started_at
+        if (self.started_at is None or elapsed < 0 or
+                fraction < self.previous_fraction - 1e-9 or
+                (self.fraction == 0 and fraction > 0) or
+                (elapsed >= self.period and self.peak_emitted)):
+            self.started_at = now
+            self.fraction = fraction
+            self.period = self.period_for(fraction)
+            self.peak_emitted = False
+            elapsed = 0.0
+        # Even a one-LED bar has its full-brightness head at this phase.
+        # A delayed first update must show that head before another reset.
+        first_peak = GPU_WAVE_SWEEP / (GPU_WAVE_TAIL + 2)
+        if fraction > 0 and not self.peak_emitted and elapsed >= first_peak:
+            elapsed = first_peak
+            self.started_at = now - elapsed
+            self.peak_emitted = True
+        self.previous_fraction = fraction
+        return elapsed
+
+
+def gpu_progress_colors(count, fraction, color, *, fill_fraction=None):
     """Fill from LED 0 towards the next PRL; leave unfilled LEDs black.
 
     Filled LEDs retain next-PRL brightness, with a proportionally dimmer
     boundary LED for fractions between whole LEDs.
     """
     fraction = max(0.0, min(1.0, fraction))
-    length = gpu_fill_length(count, fraction)
+    length = gpu_fill_length(count, fraction if fill_fraction is None else min(fraction, fill_fraction))
     return [tuple(round(channel * fraction * max(0.0, min(1.0, length - index)))
                   for channel in color)
             for index in range(count)]
 
 
-def ripple_colors(count, fraction, color, phase, *, keep_lit=False, cycle_fraction=None):
-    """Sweep through next-PRL progress, optionally keeping the rest dimly lit."""
+def ripple_colors(count, fraction, color, phase, *, keep_lit=False, cycle_fraction=None,
+                  reveal=False):
+    """Sweep to next-PRL progress, optionally revealing the bar from black."""
     fraction = max(0.0, min(1.0, fraction))
     if keep_lit:
         background = tuple(round(channel * fraction) for channel in color)
         colors = [background] * count
     else:
-        colors = gpu_progress_colors(count, fraction, color)
-    filled = math.ceil(gpu_fill_length(count, fraction))
+        colors = gpu_progress_colors(count, fraction, color,
+                                     fill_fraction=cycle_fraction if reveal else None)
+    visible_fraction = min(fraction, cycle_fraction) if reveal and cycle_fraction is not None else fraction
+    filled = math.ceil(gpu_fill_length(count, visible_fraction))
     cycle_filled = math.ceil(gpu_fill_length(count, fraction if cycle_fraction is None else cycle_fraction))
     if not filled or not cycle_filled or phase >= GPU_WAVE_SWEEP:
         return colors
-    # Let the tail leave the filled section before the next sweep begins.
-    head = int(phase / GPU_WAVE_SWEEP * (cycle_filled + GPU_WAVE_TAIL))
+    # Reveal sweeps begin before LED 0, giving every cycle a black first frame.
+    # Let the tail leave the filled section before the pause begins.
+    head = int(phase / GPU_WAVE_SWEEP * (cycle_filled + GPU_WAVE_TAIL + int(reveal))) - int(reveal)
     for index in range(filled):
         distance = head - index
+        if reveal and distance < 0:
+            colors[index] = (0, 0, 0)
+            continue
         if 0 <= distance < GPU_WAVE_TAIL:
             intensity = (1 + math.cos(math.pi * distance / GPU_WAVE_TAIL)) / 2
             colors[index] = tuple(max(base, round(channel * intensity))
@@ -209,15 +245,15 @@ def accessory_layout(device):
             positions[zone.start_idx:zone.start_idx + zone.num_leds] = coordinates
         return steps, positions
     if name.startswith('razer basilisk v3 pro 35k'):
-        # Viewed from above: wheel at the front, strip down the left side,
-        # around the palm end, then back up the right side.
-        strip = [1, 2, 3, 4, 5, 6, 4, 3, 2, 1, 0]
+        # Horizontal coordinates viewed from above: the perimeter runs down
+        # the left edge, around the palm end, and back up the right edge.
+        strip = [0, 0, 0, 0, 1, 3, 4, 5, 5, 5, 5]
         positions = [None] * len(device.leds)
         for zone in device.data.zones:
             if zone.name == 'Scroll Wheel':
-                coordinates = [0] * zone.num_leds
+                coordinates = [3] * zone.num_leds
             elif zone.name == 'Logo':
-                coordinates = [4] * zone.num_leds
+                coordinates = [3] * zone.num_leds
             elif zone.name == 'LED Strip':
                 if zone.num_leds != len(strip):
                     raise RuntimeError('Unexpected Basilisk perimeter LED layout')
@@ -225,9 +261,7 @@ def accessory_layout(device):
             else:
                 continue
             positions[zone.start_idx:zone.start_idx + zone.num_leds] = coordinates
-        # The connected wireless Phantom model's physical direction was
-        # checked by the user and is opposite the reference layout's Y axis.
-        return 7, [6 - position if position is not None else None for position in positions]
+        return 6, positions
     return None
 
 
@@ -278,6 +312,7 @@ class Hardware:
             self.previous = {}
             self.previous_progress = {}
             self.ripple_cycle = GPURippleCycle()
+            self.reveal_cycle = RevealRippleCycle()
         except BaseException:
             self.client.disconnect()
             raise
@@ -293,6 +328,9 @@ class Hardware:
         if not hasattr(self, 'ripple_cycle'):
             self.ripple_cycle = GPURippleCycle()
         phase = self.ripple_cycle.phase(brightness, now)
+        if not hasattr(self, 'reveal_cycle'):
+            self.reveal_cycle = RevealRippleCycle()
+        reveal_phase = self.reveal_cycle.phase(brightness, now)
         for group, devices in self.devices.items():
             for device in devices:
                 pending = []
@@ -301,7 +339,7 @@ class Hardware:
                 if layout is not None:
                     steps, positions = layout
                     axis = ripple_colors(steps, brightness, self.theme.accent(progress, stale, now),
-                                         phase, keep_lit=True, cycle_fraction=self.ripple_cycle.fraction)
+                                         reveal_phase, cycle_fraction=self.ripple_cycle.fraction, reveal=True)
                     complete_frame = [axis[position] if position is not None else (0, 0, 0)
                                       for position in positions]
                 elif group in ('ram', 'chassis'):
@@ -322,8 +360,8 @@ class Hardware:
                     if zone.leds and zone.name != 'Void':
                         if group == 'gpu':
                             colors = ripple_colors(len(zone.leds), brightness,
-                                                   self.theme.accent(progress, stale, now), phase,
-                                                   cycle_fraction=self.ripple_cycle.fraction)
+                                                   self.theme.accent(progress, stale, now), reveal_phase,
+                                                   cycle_fraction=self.ripple_cycle.fraction, reveal=True)
                         else:
                             colors = self.theme.progress_colors(len(zone.leds), progress, now, stale,
                                                                brightness=brightness)
@@ -416,6 +454,7 @@ def run(args):
         print(json.dumps(Metrics().read(), indent=2))
         return
     theme = load_theme(args.pearl_theme)
+    theme.configure(args.theme_config or args.pearl_status.parent / 'theme.json')
     hardware = Hardware(args.port)
     hardware.theme = theme
     running = True
@@ -455,6 +494,8 @@ def main():
     parser.add_argument("--metrics-only", action="store_true")
     parser.add_argument("--pearl-theme", type=Path, required=True)
     parser.add_argument("--pearl-status", type=Path, required=True)
+    parser.add_argument("--theme-config", type=Path,
+                        help="Shared colour settings (default: theme.json beside --pearl-status)")
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
