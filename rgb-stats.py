@@ -17,8 +17,9 @@ PERIOD = 4.0
 FRAME_INTERVAL = 0.05
 SAMPLE_INTERVAL = 1.0
 CONFIRM_TIMEOUT = 10.0
-GPU_WAVE_SWEEP = 3.0
-GPU_WAVE_PERIOD = 4.0
+GPU_WAVE_SWEEP = 1.0
+GPU_WAVE_PAUSE_MIN = 0.3
+GPU_WAVE_PAUSE_MAX = 2.0
 GPU_WAVE_TAIL = 3
 
 
@@ -115,9 +116,11 @@ def gpu_progress_colors(count, fraction, color):
 
 def gpu_ripple_colors(count, fraction, color, now):
     """Sweep a full-brightness highlight only through the filled GPU bar."""
+    fraction = max(0.0, min(1.0, fraction))
     colors = gpu_progress_colors(count, fraction, color)
-    filled = min(count, math.ceil(max(0.0, min(1.0, fraction)) * count))
-    phase = now % GPU_WAVE_PERIOD
+    filled = min(count, math.ceil(fraction * count))
+    pause = GPU_WAVE_PAUSE_MAX - fraction * (GPU_WAVE_PAUSE_MAX - GPU_WAVE_PAUSE_MIN)
+    phase = now % (GPU_WAVE_SWEEP + pause)
     if not filled or phase >= GPU_WAVE_SWEEP:
         return colors
     # Let the tail leave the filled section before the next sweep begins.

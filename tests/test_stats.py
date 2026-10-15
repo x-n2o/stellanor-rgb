@@ -166,7 +166,7 @@ class StatsTest(unittest.TestCase):
         from types import SimpleNamespace
         from unittest.mock import Mock
         def accent(progress, stale, now):
-            self.assertEqual((progress, now), (3.5, 7))
+            self.assertEqual((progress, now), (3.5, 1.5))
             return (255, 145, 24) if stale else (100, 255, 60)
         theme = SimpleNamespace(accent=accent, progress_colors=Mock(return_value=[(4, 5, 6)] * 30))
         class Zone:
@@ -184,20 +184,20 @@ class StatsTest(unittest.TestCase):
         hardware.theme = theme
         hardware.rgb_color = lambda *channels: channels
         for stale in [False, True]:
-            hardware.write_progress(3.5, 7, stale, brightness=.5)
-            base = theme.accent(3.5, stale, 7)
+            hardware.write_progress(3.5, 1.5, stale, brightness=.5)
+            base = theme.accent(3.5, stale, 1.5)
             self.assertEqual(gpu.colors, [tuple(round(channel * .5) for channel in base)] * 15
                              + [(0, 0, 0)] * 15)
             self.assertEqual(ram.colors, [(4, 5, 6)] * 30)
-            theme.progress_colors.assert_called_with(30, 3.5, 7, stale, brightness=.5)
-        hardware.write_progress(3.5, 7, brightness=0)
+            theme.progress_colors.assert_called_with(30, 3.5, 1.5, stale, brightness=.5)
+        hardware.write_progress(3.5, 1.5, brightness=0)
         self.assertEqual(gpu.colors, [(0, 0, 0)] * 30)
 
     def test_gpu_ripple_moves_right_at_full_brightness_with_a_fading_tail(self):
         color = (100, 255, 60)
         first = rgb.gpu_ripple_colors(30, .5, color, 0)
-        middle = rgb.gpu_ripple_colors(30, .5, color, 1)
-        later = rgb.gpu_ripple_colors(30, .5, color, 2)
+        middle = rgb.gpu_ripple_colors(30, .5, color, 1 / 3)
+        later = rgb.gpu_ripple_colors(30, .5, color, 2 / 3)
         self.assertEqual(first[0], color)
         self.assertEqual(middle[6], color)
         self.assertEqual(later[12], color)
@@ -205,9 +205,9 @@ class StatsTest(unittest.TestCase):
         self.assertEqual(middle[0], (50, 128, 30))
         for frame in [first, middle, later]:
             self.assertEqual(frame[15:], [(0, 0, 0)] * 15)
-        self.assertEqual(rgb.gpu_ripple_colors(30, .5, color, 3.5),
+        self.assertEqual(rgb.gpu_ripple_colors(30, .5, color, 1.5),
                          rgb.gpu_progress_colors(30, .5, color))
-        self.assertEqual(rgb.gpu_ripple_colors(30, .5, color, 4), first)
+        self.assertEqual(rgb.gpu_ripple_colors(30, .5, color, 2.15), first)
 
     def test_gpu_ripple_preserves_empty_bar_and_fractional_boundary(self):
         color = (100, 255, 60)
@@ -216,7 +216,16 @@ class StatsTest(unittest.TestCase):
             self.assertEqual(rgb.gpu_ripple_colors(0, .5, color, now), [])
             frame = rgb.gpu_ripple_colors(30, .09, color, now)
             self.assertEqual(frame[3:], [(0, 0, 0)] * 27)
-        self.assertEqual(rgb.gpu_ripple_colors(30, .09, color, 1)[2], color)
+        self.assertEqual(rgb.gpu_ripple_colors(30, .09, color, 1 / 3)[2], color)
+
+    def test_gpu_ripple_pause_decreases_with_progress(self):
+        color = (100, 255, 60)
+        for fraction in [.01, .25, .5, .99, 1]:
+            period = 1 + 2 - 1.7 * fraction
+            base = rgb.gpu_progress_colors(30, fraction, color)
+            self.assertEqual(rgb.gpu_ripple_colors(30, fraction, color, 1.01), base)
+            self.assertEqual(rgb.gpu_ripple_colors(30, fraction, color, period - .001), base)
+            self.assertEqual(rgb.gpu_ripple_colors(30, fraction, color, period + .001)[0], color)
 
     def test_all_hardware_zones_receive_the_same_next_prl_brightness(self):
         from types import SimpleNamespace
