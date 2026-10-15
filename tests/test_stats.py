@@ -181,6 +181,9 @@ class StatsTest(unittest.TestCase):
             'ram': [SimpleNamespace(id=1, zones=[ram], update=lambda: None)],
         }
         hardware.previous_progress = {}
+        cycle = rgb.GPURippleCycle()
+        cycle.phase(.5, 0)
+        hardware.gpu_cycles = {(0, 0): cycle}
         hardware.theme = theme
         hardware.rgb_color = lambda *channels: channels
         for stale in [False, True]:
@@ -207,7 +210,9 @@ class StatsTest(unittest.TestCase):
             self.assertEqual(frame[15:], [(0, 0, 0)] * 15)
         self.assertEqual(rgb.gpu_ripple_colors(30, .5, color, 1.5),
                          rgb.gpu_progress_colors(30, .5, color))
-        self.assertEqual(rgb.gpu_ripple_colors(30, .5, color, 2.15), first)
+        cycle = rgb.GPURippleCycle()
+        cycle.phase(.5, 0)
+        self.assertEqual(rgb.gpu_ripple_colors(30, .5, color, cycle.phase(.5, 2.15)), first)
 
     def test_gpu_ripple_preserves_empty_bar_and_fractional_boundary(self):
         color = (100, 255, 60)
@@ -223,9 +228,51 @@ class StatsTest(unittest.TestCase):
         for fraction in [.01, .25, .5, .99, 1]:
             period = 1 + 2 - 1.7 * fraction
             base = rgb.gpu_progress_colors(30, fraction, color)
-            self.assertEqual(rgb.gpu_ripple_colors(30, fraction, color, 1.01), base)
-            self.assertEqual(rgb.gpu_ripple_colors(30, fraction, color, period - .001), base)
-            self.assertEqual(rgb.gpu_ripple_colors(30, fraction, color, period + .001)[0], color)
+            cycle = rgb.GPURippleCycle()
+            cycle.phase(fraction, 0)
+            self.assertEqual(rgb.gpu_ripple_colors(30, fraction, color, cycle.phase(fraction, 1.01)), base)
+            self.assertEqual(rgb.gpu_ripple_colors(30, fraction, color,
+                                                 cycle.phase(fraction, period - .001)), base)
+            self.assertEqual(rgb.gpu_ripple_colors(30, fraction, color,
+                                                 cycle.phase(fraction, period + .001))[0], color)
+
+    def test_fractional_balance_noise_does_not_light_a_fourth_gpu_led(self):
+        import json
+        from datetime import datetime
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'pearl.json'
+            path.write_text(json.dumps({'payout_progress': 2.1, 'balance': {'total': 2.1},
+                                        'pool_updated_at': datetime.now().isoformat()}))
+            _, fraction, _ = rgb.read_progress(path)
+            self.assertEqual(rgb.gpu_fill_length(30, fraction), 3)
+            for phase in (0, .25, .5, .75):
+                self.assertEqual(rgb.gpu_ripple_colors(30, fraction, (100, 255, 60), phase)[3:],
+                                 [(0, 0, 0)] * 27)
+
+    def test_progress_update_does_not_jump_the_gpu_ripple_backwards(self):
+        cycle = rgb.GPURippleCycle()
+        cycle.phase(.49, 216700)
+        color = (100, 255, 60)
+        before = rgb.gpu_ripple_colors(30, .49, color, cycle.phase(.49, 216700.6),
+                                       cycle_fraction=cycle.fraction)
+        after = rgb.gpu_ripple_colors(30, .49001, color, cycle.phase(.49001, 216700.65),
+                                      cycle_fraction=cycle.fraction)
+        self.assertEqual(before.index(color), 10)
+        self.assertEqual(after.index(color), 11)
+        self.assertEqual(cycle.started_at, 216700)
+
+    def test_progress_update_preserves_pause_until_the_next_cycle(self):
+        cycle = rgb.GPURippleCycle()
+        cycle.phase(.25, 100)
+        period = cycle.period
+        self.assertAlmostEqual(cycle.phase(.99, 101.5), 1.5)
+        self.assertEqual(cycle.period, period)
+        self.assertEqual(cycle.fraction, .25)
+        self.assertAlmostEqual(cycle.phase(.99, 100 + period + .001), .001)
+        self.assertAlmostEqual(cycle.period, 1.317)
+        self.assertEqual(cycle.fraction, .99)
+        self.assertEqual(cycle.phase(0, 103), 0)
+        self.assertEqual(cycle.fraction, 0)
 
     def test_all_hardware_zones_receive_the_same_next_prl_brightness(self):
         from types import SimpleNamespace

@@ -102,6 +102,43 @@ def configure_direct(device):
     device.set_mode(mode)
 
 
+def gpu_fill_length(count, fraction):
+    """Discard floating-point noise at exact whole-LED boundaries."""
+    length = max(0.0, min(1.0, fraction)) * count
+    nearest = round(length)
+    return nearest if math.isclose(length, nearest, rel_tol=0.0, abs_tol=1e-9) else length
+
+
+class GPURippleCycle:
+    """Keep one sweep and pause anchored while live progress changes."""
+    def __init__(self):
+        self.started_at = None
+        self.fraction = 0.0
+        self.previous_fraction = 0.0
+        self.period = 0.0
+
+    def phase(self, fraction, now):
+        fraction = max(0.0, min(1.0, fraction))
+        if (self.started_at is None or now < self.started_at or
+                fraction < self.previous_fraction - 1e-9):
+            # A coin rollover/shrinking bar starts a new sweep deliberately.
+            self.started_at = now
+            self.fraction = fraction
+            self.period = self.period_for(fraction)
+        elif now >= self.started_at + self.period:
+            self.started_at += self.period
+            self.fraction = fraction
+            self.period = self.period_for(fraction)
+            # Skip missed cycles without replaying a backlog of frames.
+            self.started_at += math.floor((now - self.started_at) / self.period) * self.period
+        self.previous_fraction = fraction
+        return now - self.started_at
+
+    @staticmethod
+    def period_for(fraction):
+        return GPU_WAVE_SWEEP + GPU_WAVE_PAUSE_MAX - fraction * (GPU_WAVE_PAUSE_MAX - GPU_WAVE_PAUSE_MIN)
+
+
 def gpu_progress_colors(count, fraction, color):
     """Fill from LED 0 towards the next PRL; leave unfilled LEDs black.
 
@@ -109,22 +146,22 @@ def gpu_progress_colors(count, fraction, color):
     boundary LED for fractions between whole LEDs.
     """
     fraction = max(0.0, min(1.0, fraction))
-    return [tuple(round(channel * fraction * max(0.0, min(1.0, fraction * count - index)))
+    length = gpu_fill_length(count, fraction)
+    return [tuple(round(channel * fraction * max(0.0, min(1.0, length - index)))
                   for channel in color)
             for index in range(count)]
 
 
-def gpu_ripple_colors(count, fraction, color, now):
-    """Sweep a full-brightness highlight only through the filled GPU bar."""
+def gpu_ripple_colors(count, fraction, color, phase, *, cycle_fraction=None):
+    """Render elapsed time within one anchored sweep/pause cycle."""
     fraction = max(0.0, min(1.0, fraction))
     colors = gpu_progress_colors(count, fraction, color)
-    filled = min(count, math.ceil(fraction * count))
-    pause = GPU_WAVE_PAUSE_MAX - fraction * (GPU_WAVE_PAUSE_MAX - GPU_WAVE_PAUSE_MIN)
-    phase = now % (GPU_WAVE_SWEEP + pause)
-    if not filled or phase >= GPU_WAVE_SWEEP:
+    filled = math.ceil(gpu_fill_length(count, fraction))
+    cycle_filled = math.ceil(gpu_fill_length(count, fraction if cycle_fraction is None else cycle_fraction))
+    if not filled or not cycle_filled or phase >= GPU_WAVE_SWEEP:
         return colors
     # Let the tail leave the filled section before the next sweep begins.
-    head = int(phase / GPU_WAVE_SWEEP * (filled + GPU_WAVE_TAIL))
+    head = int(phase / GPU_WAVE_SWEEP * (cycle_filled + GPU_WAVE_TAIL))
     for index in range(filled):
         distance = head - index
         if 0 <= distance < GPU_WAVE_TAIL:
@@ -168,6 +205,7 @@ class Hardware:
             LOG.info('Synchronized controllers: %s', [d.name for group in self.devices.values() for d in group])
             self.previous = {}
             self.previous_progress = {}
+            self.gpu_cycles = {}
         except BaseException:
             self.client.disconnect()
             raise
@@ -186,8 +224,11 @@ class Hardware:
                 for index, zone in enumerate(device.zones):
                     if zone.leds and zone.name != 'Void':
                         if group == 'gpu':
+                            cycle = self.gpu_cycles.setdefault((device.id, index), GPURippleCycle())
+                            phase = cycle.phase(brightness, now)
                             colors = gpu_ripple_colors(len(zone.leds), brightness,
-                                                       self.theme.accent(progress, stale, now), now)
+                                                       self.theme.accent(progress, stale, now), phase,
+                                                       cycle_fraction=cycle.fraction)
                         else:
                             colors = self.theme.progress_colors(len(zone.leds), progress, now, stale,
                                                                brightness=brightness)

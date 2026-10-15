@@ -26,7 +26,9 @@ dimmer. A wave travels left to right only within the filled GPU section: its
 leading LED reaches 100% brightness in the shared status colour, with a fading
 tail over the dim progress bar. Each sweep takes one second regardless of the
 filled length, followed by a pause that decreases linearly from two seconds
-at 0% progress to 0.3 seconds at 100%. Unfilled LEDs stay off throughout. The GPU resets its bar
+at 0% progress to 0.3 seconds at 100%. Progress updates retain the current
+sweep and pause; the new pause duration takes effect at the next cycle.
+Unfilled LEDs stay off throughout. The GPU resets its bar
 at each whole PRL. Unfilled LEDs on other devices remain dim relative to the filled portion.
 Rewards still maturing count towards progress, just
 as in `pearl watch`; a full bar can remain full while awaiting confirmation.
